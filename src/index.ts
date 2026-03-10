@@ -22,6 +22,8 @@ const BROKEN_PIPE_ERROR_CODES = new Set([
   'ERR_STREAM_WRITE_AFTER_END',
 ]);
 
+const DEFAULT_MCP_PORT = 3000 as const;
+
 function extractErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const maybeCode = (error as { code?: unknown }).code;
@@ -273,13 +275,96 @@ if (transportMode === 'http') {
   const { createServer: createHttpServer } = await import('node:http');
   const { randomUUID } = await import('node:crypto');
 
-  const PORT = parseInt(process.env.MCP_PORT || '3000', 10);
+  const PORT = parseInt(process.env.MCP_PORT || String(DEFAULT_MCP_PORT), 10);
 
-  // Map of session ID → transport + server for multi-session support
-  const sessions = new Map<string, {
+  type SessionEntry = {
     transport: InstanceType<typeof StreamableHTTPServerTransport>;
     server: Server;
-  }>();
+  };
+
+  // Map of session ID → transport + server for multi-session support
+  const sessions = new Map<string, SessionEntry>();
+
+  /** Safely close a session's server, ignoring errors. */
+  async function closeSession(session: SessionEntry, sessionId: string): Promise<void> {
+    sessions.delete(sessionId);
+    try { await session.server.close(); } catch { /* ignore close errors */ }
+  }
+
+  /** Handle GET /mcp — resume existing session's SSE stream. */
+  async function handleMcpGet(
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+    sessionId: string | undefined,
+  ): Promise<void> {
+    if (sessionId && sessions.has(sessionId)) {
+      await sessions.get(sessionId)!.transport.handleRequest(req, res);
+    } else {
+      res.writeHead(400).end('Bad request — missing session ID');
+    }
+  }
+
+  /** Handle POST /mcp — route to existing session or create a new one. */
+  async function handleMcpPost(
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+    sessionId: string | undefined,
+  ): Promise<void> {
+    if (sessionId && sessions.has(sessionId)) {
+      await sessions.get(sessionId)!.transport.handleRequest(req, res);
+      return;
+    }
+
+    if (sessionId) {
+      res.writeHead(400).end('Bad request — missing session ID');
+      return;
+    }
+
+    // New session (initialization)
+    const sessionServer = new Server(
+      { name: SERVER.NAME, version: SERVER.VERSION },
+      { capabilities: { tools: {}, logging: {} } }
+    );
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        sessions.set(id, { transport, server: sessionServer });
+        console.error(`[HTTP] Session ${id} initialized`);
+      },
+      onsessionclosed: async (id) => {
+        const session = sessions.get(id);
+        if (session) {
+          await closeSession(session, id);
+        }
+        console.error(`[HTTP] Session ${id} closed`);
+      },
+    });
+
+    // Note: initLogger overwrites a global serverRef, so logs from all
+    // HTTP sessions route to the most-recently-initialized session.
+    // A true per-session logger is out of scope for this fix.
+    initLogger(sessionServer);
+    registerToolHandlers(sessionServer);
+
+    await sessionServer.connect(transport);
+    await transport.handleRequest(req, res);
+  }
+
+  /** Handle DELETE /mcp — terminate a session. */
+  async function handleMcpDelete(
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+    sessionId: string | undefined,
+  ): Promise<void> {
+    if (sessionId && sessions.has(sessionId)) {
+      const session = sessions.get(sessionId)!;
+      await session.transport.handleRequest(req, res);
+      await closeSession(session, sessionId);
+    } else {
+      res.writeHead(404).end('Session not found');
+    }
+  }
 
   const httpServer = createHttpServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${PORT}`);
@@ -293,61 +378,22 @@ if (transportMode === 'http') {
 
     // MCP endpoint
     if (url.pathname === '/mcp') {
-      // Handle DELETE — session termination
-      if (req.method === 'DELETE') {
-        const sessionId = req.headers['mcp-session-id'] as string | undefined;
-        if (sessionId && sessions.has(sessionId)) {
-          const session = sessions.get(sessionId)!;
-          await session.transport.handleRequest(req, res);
-          sessions.delete(sessionId);
-          try { await session.server.close(); } catch { /* ignore */ }
-        } else {
-          res.writeHead(404).end('Session not found');
-        }
-        return;
-      }
-
-      // For GET/POST — find existing session or create new one
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
-      if (sessionId && sessions.has(sessionId)) {
-        // Existing session
-        await sessions.get(sessionId)!.transport.handleRequest(req, res);
-      } else if (!sessionId && req.method === 'POST') {
-        // New session (initialization)
-        const sessionServer = new Server(
-          { name: SERVER.NAME, version: SERVER.VERSION },
-          { capabilities: { tools: {}, logging: {} } }
-        );
-
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (id) => {
-            sessions.set(id, { transport, server: sessionServer });
-            console.error(`[HTTP] Session ${id} initialized`);
-          },
-          onsessionclosed: async (id) => {
-            const session = sessions.get(id);
-            if (session) {
-              sessions.delete(id);
-              try { await session.server.close(); } catch { /* ignore */ }
-            }
-            console.error(`[HTTP] Session ${id} closed`);
-          },
-        });
-
-        // Note: initLogger overwrites a global serverRef, so logs from all
-        // HTTP sessions route to the most-recently-initialized session.
-        // A true per-session logger is out of scope for this fix.
-        initLogger(sessionServer);
-        registerToolHandlers(sessionServer);
-
-        await sessionServer.connect(transport);
-        await transport.handleRequest(req, res);
-      } else {
-        res.writeHead(400).end('Bad request — missing session ID');
+      switch (req.method) {
+        case 'DELETE':
+          await handleMcpDelete(req, res, sessionId);
+          return;
+        case 'GET':
+          await handleMcpGet(req, res, sessionId);
+          return;
+        case 'POST':
+          await handleMcpPost(req, res, sessionId);
+          return;
+        default:
+          res.writeHead(405).end('Method not allowed');
+          return;
       }
-      return;
     }
 
     res.writeHead(404).end('Not found');

@@ -7,21 +7,31 @@
  * - 10% Next Steps: Actionable follow-up commands
  */
 
+/** Default maximum items to display in list formatting */
+export const DEFAULT_MAX_ITEMS = 20 as const;
+
+/** Maximum snippet length before truncation in URL aggregator output */
+export const MAX_SNIPPET_LENGTH = 200 as const;
+
+/** Duration thresholds in milliseconds */
+const SECONDS_MS = 1_000 as const;
+const MINUTES_MS = 60_000 as const;
+
 // ============================================================================
 // Success Response Formatter
 // ============================================================================
 
 export interface SuccessOptions {
   /** Title/header for the response */
-  title: string;
+  readonly title: string;
   /** Summary section (70% of content) */
-  summary: string;
+  readonly summary: string;
   /** Optional data section (20% of content) */
-  data?: string;
+  readonly data?: string;
   /** Optional next steps (10% of content) */
-  nextSteps?: string[];
+  readonly nextSteps?: string[];
   /** Optional metadata footer */
-  metadata?: Record<string, string | number>;
+  readonly metadata?: Record<string, string | number>;
 }
 
 /**
@@ -71,17 +81,17 @@ export function formatSuccess(opts: SuccessOptions): string {
 
 export interface ErrorOptions {
   /** Error code (e.g., RATE_LIMITED, TIMEOUT) */
-  code: string;
+  readonly code: string;
   /** Human-readable error message */
-  message: string;
+  readonly message: string;
   /** Is this error retryable? */
-  retryable?: boolean;
+  readonly retryable?: boolean;
   /** How to fix the error */
-  howToFix?: string[];
+  readonly howToFix?: string[];
   /** Alternative actions */
-  alternatives?: string[];
+  readonly alternatives?: string[];
   /** Tool name for context */
-  toolName?: string;
+  readonly toolName?: string;
 }
 
 /**
@@ -130,19 +140,19 @@ export function formatError(opts: ErrorOptions): string {
 
 export interface BatchHeaderOptions {
   /** Batch operation title */
-  title: string;
+  readonly title: string;
   /** Total items attempted */
-  totalItems: number;
+  readonly totalItems: number;
   /** Successfully processed count */
-  successful: number;
+  readonly successful: number;
   /** Failed count */
-  failed: number;
+  readonly failed: number;
   /** Optional tokens per item */
-  tokensPerItem?: number;
+  readonly tokensPerItem?: number;
   /** Optional batch count */
-  batches?: number;
+  readonly batches?: number;
   /** Extra stats to include */
-  extras?: Record<string, string | number>;
+  readonly extras?: Record<string, string | number>;
 }
 
 /**
@@ -186,20 +196,20 @@ export function formatBatchHeader(opts: BatchHeaderOptions): string {
 
 export interface ListItem {
   /** Item title/name */
-  title: string;
+  readonly title: string;
   /** Optional description */
-  description?: string;
+  readonly description?: string;
   /** Optional metadata */
-  meta?: string;
+  readonly meta?: string;
   /** Optional URL */
-  url?: string;
+  readonly url?: string;
 }
 
 /**
  * Format a numbered list with optional metadata
  */
 export function formatList(items: ListItem[], options?: { maxItems?: number; numbered?: boolean }): string {
-  const max = options?.maxItems ?? 20;
+  const max = options?.maxItems ?? DEFAULT_MAX_ITEMS;
   const numbered = options?.numbered ?? true;
   const toShow = items.slice(0, max);
   const remaining = items.length - max;
@@ -234,9 +244,9 @@ export function formatList(items: ListItem[], options?: { maxItems?: number; num
  * Format duration in human-readable form
  */
 export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
+  if (ms < SECONDS_MS) return `${ms}ms`;
+  if (ms < MINUTES_MS) return `${(ms / SECONDS_MS).toFixed(1)}s`;
+  return `${(ms / MINUTES_MS).toFixed(1)}m`;
 }
 
 // ============================================================================

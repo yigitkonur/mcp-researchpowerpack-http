@@ -14,17 +14,29 @@ import {
 } from '../utils/errors.js';
 import { mcpLog } from '../utils/logger.js';
 
+/** Default concurrency for parallel LLM extractions */
+export const DEFAULT_LLM_CONCURRENCY = 3 as const;
+
+/** Maximum input characters for LLM processing (~25k tokens) */
+const MAX_LLM_INPUT_CHARS = 100_000 as const;
+
+/** LLM client timeout in milliseconds */
+const LLM_CLIENT_TIMEOUT_MS = 120_000 as const;
+
+/** Jitter factor for exponential backoff */
+const BACKOFF_JITTER_FACTOR = 0.3 as const;
+
 interface ProcessingConfig {
-  use_llm: boolean;
-  what_to_extract: string | undefined;
-  max_tokens?: number;
+  readonly use_llm: boolean;
+  readonly what_to_extract: string | undefined;
+  readonly max_tokens?: number;
 }
 
 interface LLMResult {
-  content: string;
-  processed: boolean;
-  error?: string;
-  errorDetails?: StructuredError;
+  readonly content: string;
+  readonly processed: boolean;
+  readonly error?: string;
+  readonly errorDetails?: StructuredError;
 }
 
 // LLM-specific retry configuration
@@ -42,6 +54,16 @@ const RETRYABLE_LLM_ERROR_CODES = new Set([
   'service_unavailable',
 ]);
 
+/** Type guard for errors with an HTTP status code */
+function hasStatus(error: unknown): error is { status: number } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'status' in error &&
+    typeof (error as Record<string, unknown>).status === 'number'
+  );
+}
+
 let llmClient: OpenAI | null = null;
 
 export function createLLMProcessor(): OpenAI | null {
@@ -51,7 +73,7 @@ export function createLLMProcessor(): OpenAI | null {
     llmClient = new OpenAI({
       baseURL: RESEARCH.BASE_URL,
       apiKey: RESEARCH.API_KEY,
-      timeout: 120000,
+      timeout: LLM_CLIENT_TIMEOUT_MS,
       maxRetries: 0, // We handle retries ourselves for more control
     });
   }
@@ -62,29 +84,32 @@ export function createLLMProcessor(): OpenAI | null {
  * Check if an LLM error is retryable
  */
 function isRetryableLLMError(error: unknown): boolean {
-  if (!error) return false;
-
-  const err = error as {
-    status?: number;
-    code?: string;
-    error?: { type?: string; code?: string };
-    message?: string;
-  };
+  if (!error || typeof error !== 'object') return false;
 
   // Check HTTP status codes
-  const status = err.status;
-  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
-    return true;
+  if (hasStatus(error)) {
+    if (error.status === 429 || error.status === 500 || error.status === 502 || error.status === 503 || error.status === 504) {
+      return true;
+    }
   }
 
   // Check error codes from OpenAI/OpenRouter
-  const errorCode = err.code || err.error?.code || err.error?.type;
+  const record = error as Record<string, unknown>;
+  const code = typeof record.code === 'string' ? record.code : undefined;
+  const nested =
+    typeof record.error === 'object' && record.error !== null
+      ? (record.error as Record<string, unknown>)
+      : null;
+  const errorCode =
+    code ??
+    (nested && typeof nested.code === 'string' ? nested.code : undefined) ??
+    (nested && typeof nested.type === 'string' ? nested.type : undefined);
   if (errorCode && RETRYABLE_LLM_ERROR_CODES.has(errorCode)) {
     return true;
   }
 
   // Check message for common patterns
-  const message = (err.message || '').toLowerCase();
+  const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
   if (
     message.includes('rate limit') ||
     message.includes('timeout') ||
@@ -105,7 +130,7 @@ function isRetryableLLMError(error: unknown): boolean {
  */
 function calculateLLMBackoff(attempt: number): number {
   const exponentialDelay = LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt);
-  const jitter = Math.random() * 0.3 * exponentialDelay;
+  const jitter = Math.random() * BACKOFF_JITTER_FACTOR * exponentialDelay;
   return Math.min(exponentialDelay + jitter, LLM_RETRY_CONFIG.maxDelayMs);
 }
 
@@ -143,9 +168,8 @@ export async function processContentWithLLM(
   }
 
   // Truncate extremely long content to avoid token limits
-  const maxInputChars = 100000; // ~25k tokens
-  const truncatedContent = content.length > maxInputChars
-    ? content.substring(0, maxInputChars) + '\n\n[Content truncated due to length]'
+  const truncatedContent = content.length > MAX_LLM_INPUT_CHARS
+    ? content.substring(0, MAX_LLM_INPUT_CHARS) + '\n\n[Content truncated due to length]'
     : content;
 
   const prompt = config.what_to_extract
@@ -174,7 +198,10 @@ export async function processContentWithLLM(
         mcpLog('warning', `Retry attempt ${attempt}/${LLM_RETRY_CONFIG.maxRetries}`, 'llm');
       }
 
-      const response = await processor.chat.completions.create(requestBody as any, { signal });
+      const response = await processor.chat.completions.create(
+        requestBody as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+        { signal }
+      );
 
       const result = response.choices?.[0]?.message?.content;
       if (result && result.trim()) {
@@ -195,12 +222,15 @@ export async function processContentWithLLM(
         },
       };
 
-    } catch (err) {
+    } catch (err: unknown) {
       lastError = classifyError(err);
 
       // Log the error
-      const errDetails = err as { status?: number; code?: string };
-      mcpLog('error', `Error (attempt ${attempt + 1}): ${lastError.message} [status=${errDetails.status}, code=${errDetails.code}, retryable=${isRetryableLLMError(err)}]`, 'llm');
+      const status = hasStatus(err) ? err.status : undefined;
+      const code = typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as Record<string, unknown>).code)
+        : undefined;
+      mcpLog('error', `Error (attempt ${attempt + 1}): ${lastError.message} [status=${status}, code=${code}, retryable=${isRetryableLLMError(err)}]`, 'llm');
 
       // Check if we should retry
       if (isRetryableLLMError(err) && attempt < LLM_RETRY_CONFIG.maxRetries) {

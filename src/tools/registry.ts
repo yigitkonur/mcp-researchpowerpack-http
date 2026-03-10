@@ -28,8 +28,8 @@ import { handleWebSearch } from './search.js';
  * MCP-compliant tool result with index signature for SDK compatibility
  */
 export interface CallToolResult {
-  content: Array<{ type: 'text'; text: string }>;
-  isError?: boolean;
+  readonly content: Array<{ readonly type: 'text'; readonly text: string }>;
+  readonly isError?: boolean;
   [key: string]: unknown;
 }
 
@@ -37,12 +37,12 @@ export interface CallToolResult {
  * Configuration for a registered tool
  */
 export interface ToolRegistration {
-  name: string;
-  capability?: keyof Capabilities;
-  schema: z.ZodSchema;
-  handler: (params: unknown) => Promise<string>;
-  postValidate?: (params: unknown) => string | undefined;
-  transformResponse?: (result: string) => { content: string; isError?: boolean };
+  readonly name: string;
+  readonly capability?: keyof Capabilities;
+  readonly schema: z.ZodSchema;
+  readonly handler: (params: unknown) => Promise<string>;
+  readonly postValidate?: (params: unknown) => string | undefined;
+  readonly transformResponse?: (result: string) => { content: string; isError?: boolean };
 }
 
 /**
@@ -186,6 +186,65 @@ export const toolRegistry: ToolRegistry = {
 };
 
 // ============================================================================
+// Execute Tool Helpers
+// ============================================================================
+
+/**
+ * Validate params with Zod schema and optional post-validation.
+ * Returns validated params or a CallToolResult error.
+ */
+function validateToolParams(
+  tool: ToolRegistration,
+  args: unknown,
+): { params: unknown } | CallToolResult {
+  let validatedParams: unknown;
+  try {
+    validatedParams = tool.schema.parse(args);
+  } catch (error) {
+    if (error instanceof ZodError) {
+      const issues = error.issues
+        .map((i) => `- **${i.path.join('.') || 'root'}**: ${i.message}`)
+        .join('\n');
+      return {
+        content: [{ type: 'text', text: `# ❌ Validation Error\n\n${issues}` }],
+        isError: true,
+      };
+    }
+    const structured = classifyError(error);
+    return createToolErrorFromStructured(structured);
+  }
+
+  if (tool.postValidate) {
+    const postError = tool.postValidate(validatedParams);
+    if (postError) {
+      return {
+        content: [{ type: 'text', text: `# ❌ Validation Error\n\n${postError}` }],
+        isError: true,
+      };
+    }
+  }
+
+  return { params: validatedParams };
+}
+
+/**
+ * Build the final CallToolResult from a handler result string,
+ * applying the tool's transformResponse if present.
+ */
+function buildToolResult(result: string, tool: ToolRegistration): CallToolResult {
+  if (tool.transformResponse) {
+    const transformed = tool.transformResponse(result);
+    return {
+      content: [{ type: 'text', text: transformed.content }],
+      isError: transformed.isError,
+    };
+  }
+  return {
+    content: [{ type: 'text', text: result }],
+  };
+}
+
+// ============================================================================
 // Execute Tool (Main Entry Point)
 // ============================================================================
 
@@ -209,7 +268,6 @@ export async function executeTool(
   args: unknown,
   capabilities: Capabilities
 ): Promise<CallToolResult> {
-  // Step 1: Lookup tool
   const tool = toolRegistry[name];
   if (!tool) {
     throw new McpError(
@@ -218,7 +276,6 @@ export async function executeTool(
     );
   }
 
-  // Step 2: Check capability
   if (tool.capability && !capabilities[tool.capability]) {
     return {
       content: [{ type: 'text', text: getMissingEnvMessage(tool.capability) }],
@@ -226,59 +283,18 @@ export async function executeTool(
     };
   }
 
-  // Step 3: Validate params with Zod
-  let validatedParams: unknown;
-  try {
-    validatedParams = tool.schema.parse(args);
-  } catch (error) {
-    if (error instanceof ZodError) {
-      const issues = error.issues
-        .map((i) => `- **${i.path.join('.') || 'root'}**: ${i.message}`)
-        .join('\n');
-      return {
-        content: [{ type: 'text', text: `# ❌ Validation Error\n\n${issues}` }],
-        isError: true,
-      };
-    }
-    // Non-Zod validation error
-    const structured = classifyError(error);
-    return createToolErrorFromStructured(structured);
-  }
+  const validation = validateToolParams(tool, args);
+  if ('content' in validation) return validation;
 
-  // Step 3.5: Optional post-validation
-  if (tool.postValidate) {
-    const postError = tool.postValidate(validatedParams);
-    if (postError) {
-      return {
-        content: [{ type: 'text', text: `# ❌ Validation Error\n\n${postError}` }],
-        isError: true,
-      };
-    }
-  }
-
-  // Step 4: Execute handler
   let result: string;
   try {
-    result = await tool.handler(validatedParams);
+    result = await tool.handler(validation.params);
   } catch (error) {
-    // Handler threw (shouldn't happen if handlers follow "never throw" pattern)
     const structured = classifyError(error);
     return createToolErrorFromStructured(structured);
   }
 
-  // Step 5: Transform response
-  if (tool.transformResponse) {
-    const transformed = tool.transformResponse(result);
-    return {
-      content: [{ type: 'text', text: transformed.content }],
-      isError: transformed.isError,
-    };
-  }
-
-  // Default: success response
-  return {
-    content: [{ type: 'text', text: result }],
-  };
+  return buildToolResult(result, tool);
 }
 
 // ============================================================================

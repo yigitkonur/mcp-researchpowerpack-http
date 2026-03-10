@@ -29,14 +29,14 @@ export type WebSearchParams = z.infer<typeof webSearchParamsSchema>;
 
 // Output type
 export interface WebSearchOutput {
-  content: string;
-  metadata: {
-    total_keywords: number;
-    total_results: number;
-    execution_time_ms: number;
-    total_unique_urls?: number;
-    consensus_url_count?: number;
-    frequency_threshold?: number;
-    errorCode?: string; // MCP error code for programmatic handling (on failure)
+  readonly content: string;
+  readonly metadata: {
+    readonly total_keywords: number;
+    readonly total_results: number;
+    readonly execution_time_ms: number;
+    readonly total_unique_urls?: number;
+    readonly consensus_url_count?: number;
+    readonly frequency_threshold?: number;
+    readonly errorCode?: string; // MCP error code for programmatic handling (on failure)
   };
 }

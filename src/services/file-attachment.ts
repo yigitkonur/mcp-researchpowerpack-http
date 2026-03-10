@@ -6,18 +6,30 @@ import { access, readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { pMap } from '../utils/concurrency.js';
 
+/** Maximum lines shown before smart truncation kicks in */
+const TRUNCATION_THRESHOLD = 600 as const;
+
+/** Number of leading lines to keep when truncating */
+const TRUNCATION_HEAD_LINES = 500 as const;
+
+/** Number of trailing lines to keep when truncating */
+const TRUNCATION_TAIL_LINES = 100 as const;
+
+/** Default concurrency for parallel file reads */
+const FILE_READ_CONCURRENCY = 5 as const;
+
 interface FileAttachment {
-  path: string;
-  start_line?: number | undefined;
-  end_line?: number | undefined;
-  description?: string | undefined;
+  readonly path: string;
+  readonly start_line?: number | undefined;
+  readonly end_line?: number | undefined;
+  readonly description?: string | undefined;
 }
 
 interface FormattedFileResult {
-  success: boolean;
-  path: string;
-  content: string;
-  error?: string | undefined;
+  readonly success: boolean;
+  readonly path: string;
+  readonly content: string;
+  readonly error?: string | undefined;
 }
 
 export class FileAttachmentService {
@@ -29,7 +41,7 @@ export class FileAttachmentService {
       return '';
     }
 
-    const results = await pMap(attachments, (attachment) => this.formatSingleFile(attachment), 5);
+    const results = await pMap(attachments, (attachment) => this.formatSingleFile(attachment), FILE_READ_CONCURRENCY);
 
     // Build the attachments section
     const parts: string[] = ['\n\n---\n\n# 📎 ATTACHED FILES\n\n'];
@@ -120,22 +132,22 @@ export class FileAttachmentService {
   private formatCodeBlock(lines: string[], language: string, startIdx: number): string {
     const parts: string[] = [`\`\`\`${language.toLowerCase()}\n`];
 
-    // Smart truncation for very large files (keep first 500 lines + last 100 lines)
-    if (lines.length > 600) {
-      // First 500 lines
-      const firstLines = lines.slice(0, 500);
+    // Smart truncation for very large files (keep first N lines + last M lines)
+    if (lines.length > TRUNCATION_THRESHOLD) {
+      // First N lines
+      const firstLines = lines.slice(0, TRUNCATION_HEAD_LINES);
       for (let idx = 0; idx < firstLines.length; idx++) {
         const lineNumber = startIdx + idx + 1;
         parts.push(`${lineNumber.toString().padStart(4, ' ')}: ${firstLines[idx]}\n`);
       }
 
       // Truncation marker
-      parts.push(`\n... [${lines.length - 600} lines truncated for brevity] ...\n\n`);
+      parts.push(`\n... [${lines.length - TRUNCATION_THRESHOLD} lines truncated for brevity] ...\n\n`);
 
-      // Last 100 lines
-      const lastLines = lines.slice(-100);
+      // Last M lines
+      const lastLines = lines.slice(-TRUNCATION_TAIL_LINES);
       for (let idx = 0; idx < lastLines.length; idx++) {
-        const lineNumber = startIdx + lines.length - 100 + idx + 1;
+        const lineNumber = startIdx + lines.length - TRUNCATION_TAIL_LINES + idx + 1;
         parts.push(`${lineNumber.toString().padStart(4, ' ')}: ${lastLines[idx]}\n`);
       }
     } else {

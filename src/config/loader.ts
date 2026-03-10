@@ -74,7 +74,7 @@ function applyNumberValidation(schema: z.ZodNumber, validation?: YamlValidation)
 /**
  * Convert YAML validation rules to Zod array schema
  */
-function applyArrayValidation<T>(
+function applyArrayValidation(
   schema: z.ZodArray<z.ZodTypeAny>,
   validation?: YamlValidation
 ): z.ZodArray<z.ZodTypeAny> {

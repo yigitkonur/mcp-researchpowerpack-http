@@ -6,6 +6,7 @@
 
 import { REDDIT } from '../config/index.js';
 import { USER_AGENT_VERSION } from '../version.js';
+import { calculateBackoff } from '../utils/retry.js';
 import {
   classifyError,
   fetchWithTimeout,
@@ -16,49 +17,99 @@ import {
 import { pMap, pMapSettled } from '../utils/concurrency.js';
 import { mcpLog } from '../utils/logger.js';
 
+// ── Constants ──
+
+const REDDIT_TOKEN_URL = 'https://www.reddit.com/api/v1/access_token' as const;
+const REDDIT_API_BASE = 'https://oauth.reddit.com' as const;
+const TOKEN_EXPIRY_MS = 55_000 as const; // 55 second expiry (conservative)
+
+// ── Data Interfaces ──
+
 interface Post {
-  title: string;
-  author: string;
-  subreddit: string;
-  body: string;
-  score: number;
-  commentCount: number;
-  url: string;
-  created: Date;
-  flair?: string;
-  isNsfw: boolean;
-  isPinned: boolean;
+  readonly title: string;
+  readonly author: string;
+  readonly subreddit: string;
+  readonly body: string;
+  readonly score: number;
+  readonly commentCount: number;
+  readonly url: string;
+  readonly created: Date;
+  readonly flair?: string;
+  readonly isNsfw: boolean;
+  readonly isPinned: boolean;
 }
 
 export interface Comment {
-  author: string;
-  body: string;
-  score: number;
-  depth: number;
-  isOP: boolean;
+  readonly author: string;
+  readonly body: string;
+  readonly score: number;
+  readonly depth: number;
+  readonly isOP: boolean;
 }
 
 export interface PostResult {
-  post: Post;
-  comments: Comment[];
-  allocatedComments: number;
-  actualComments: number;
+  readonly post: Post;
+  readonly comments: Comment[];
+  readonly allocatedComments: number;
+  readonly actualComments: number;
 }
 
 interface BatchPostResult {
-  results: Map<string, PostResult | Error>;
-  batchesProcessed: number;
-  totalPosts: number;
-  rateLimitHits: number;
-  commentAllocation: CommentAllocation;
+  readonly results: Map<string, PostResult | Error>;
+  readonly batchesProcessed: number;
+  readonly totalPosts: number;
+  readonly rateLimitHits: number;
+  readonly commentAllocation: CommentAllocation;
 }
 
 interface CommentAllocation {
-  totalBudget: number;
-  perPostBase: number;
-  perPostCapped: number;
+  readonly totalBudget: number;
+  readonly perPostBase: number;
+  readonly perPostCapped: number;
   redistributed: boolean;
 }
+
+/** Reddit API "Listing" wrapper */
+interface RedditListing<T> {
+  readonly kind: string;
+  readonly data: {
+    readonly children: ReadonlyArray<{ readonly kind: string; readonly data: T }>;
+    readonly after?: string;
+    readonly before?: string;
+  };
+}
+
+/** Reddit post data from API */
+interface RedditPostData {
+  readonly title: string;
+  readonly selftext: string;
+  readonly selftext_html?: string;
+  readonly author: string;
+  readonly subreddit: string;
+  readonly score: number;
+  readonly upvote_ratio: number;
+  readonly num_comments: number;
+  readonly created_utc: number;
+  readonly url: string;
+  readonly permalink: string;
+  readonly is_self: boolean;
+  readonly over_18: boolean;
+  readonly stickied: boolean;
+  readonly link_flair_text?: string;
+  readonly [key: string]: unknown;
+}
+
+/** Reddit comment data from API */
+interface RedditCommentData {
+  readonly body?: string;
+  readonly author?: string;
+  readonly score?: number;
+  readonly created_utc?: number;
+  readonly replies?: RedditListing<RedditCommentData> | string;
+  readonly [key: string]: unknown;
+}
+
+type RedditPostResponse = [RedditListing<RedditPostData>, RedditListing<RedditCommentData>];
 
 export function calculateCommentAllocation(postCount: number): CommentAllocation {
   const totalBudget = REDDIT.MAX_COMMENT_BUDGET;
@@ -79,9 +130,217 @@ const DEBUG_TOKEN_CACHE = process.env.DEBUG_REDDIT === 'true';
 // Pending auth promise for deduplicating concurrent auth calls
 let pendingAuthPromise: Promise<string | null> | null = null;
 
+// ── Decomposed Helpers ──
+
+/**
+ * Fetch a Reddit post's JSON from the API
+ */
+async function fetchRedditJson(
+  sub: string,
+  id: string,
+  maxComments: number,
+  token: string,
+  userAgent: string,
+): Promise<RedditPostResponse> {
+  const limit = Math.min(maxComments, 500);
+  const apiUrl = `${REDDIT_API_BASE}/r/${sub}/comments/${id}?sort=top&limit=${limit}&depth=10&raw_json=1`;
+
+  const res = await fetchWithTimeout(apiUrl, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'User-Agent': userAgent,
+    },
+    timeoutMs: 30000,
+  });
+
+  if (res.status === 429) {
+    const err = new Error('Rate limited by Reddit API');
+    (err as Error & { status: number }).status = 429;
+    throw err;
+  }
+
+  if (res.status === 404) {
+    throw new Error(`Post not found: /r/${sub}/comments/${id}`);
+  }
+
+  if (!res.ok) {
+    const err = new Error(`Reddit API error: ${res.status}`);
+    (err as Error & { status: number }).status = res.status;
+    throw err;
+  }
+
+  try {
+    return await res.json() as RedditPostResponse;
+  } catch {
+    throw new Error('Failed to parse Reddit API response');
+  }
+}
+
+/**
+ * Extract structured post data from a Reddit listing
+ */
+function parsePostData(
+  postListing: RedditListing<RedditPostData>,
+  sub: string,
+): Post {
+  const p = postListing?.data?.children?.[0]?.data;
+  if (!p) {
+    throw new Error(`Post data not found in response for /r/${sub}`);
+  }
+
+  return {
+    title: p.title || 'Untitled',
+    author: p.author || '[deleted]',
+    subreddit: p.subreddit || sub,
+    body: formatBody(p),
+    score: p.score || 0,
+    commentCount: p.num_comments || 0,
+    url: `https://reddit.com${p.permalink || ''}`,
+    created: new Date((p.created_utc || 0) * 1000),
+    flair: p.link_flair_text || undefined,
+    isNsfw: p.over_18 || false,
+    isPinned: p.stickied || false,
+  };
+}
+
+function formatBody(p: RedditPostData): string {
+  if (p.selftext?.trim()) return p.selftext;
+  if (p.is_self) return '';
+  if (p.url) return `**Link:** ${p.url}`;
+  return '';
+}
+
+/**
+ * Extract and sort comments from a Reddit comment listing
+ */
+function parseCommentTree(
+  commentListing: RedditListing<RedditCommentData>,
+  maxComments: number,
+  opAuthor: string,
+): Comment[] {
+  const result: Comment[] = [];
+
+  const extract = (items: ReadonlyArray<{ readonly kind: string; readonly data: RedditCommentData }>, depth = 0): void => {
+    const sorted = [...items].sort((a, b) => (b.data?.score || 0) - (a.data?.score || 0));
+
+    for (const c of sorted) {
+      if (result.length >= maxComments) return;
+      if (c.kind !== 't1' || !c.data?.author || c.data.author === '[deleted]') continue;
+
+      result.push({
+        author: c.data.author,
+        body: c.data.body || '',
+        score: c.data.score || 0,
+        depth,
+        isOP: c.data.author === opAuthor,
+      });
+
+      if (typeof c.data.replies === 'object' && c.data.replies?.data?.children && result.length < maxComments) {
+        extract(c.data.replies.data.children, depth + 1);
+      }
+    }
+  };
+
+  extract(commentListing?.data?.children || []);
+  return result;
+}
+
+// ── Batch Helpers ──
+
+/**
+ * Process a single batch of Reddit URLs, returning results keyed by URL
+ */
+async function processBatch(
+  client: RedditClient,
+  batchUrls: string[],
+  maxComments: number,
+): Promise<{ results: Map<string, PostResult | Error>; rateLimitHits: number }> {
+  const results = new Map<string, PostResult | Error>();
+  let rateLimitHits = 0;
+
+  const batchResults = await pMapSettled(
+    batchUrls,
+    url => client.getPost(url, maxComments),
+    5,
+  );
+
+  for (let i = 0; i < batchResults.length; i++) {
+    const result = batchResults[i];
+    if (!result) continue;
+    const url = batchUrls[i] ?? '';
+
+    if (result.status === 'fulfilled') {
+      results.set(url, result.value);
+    } else {
+      const errorMsg = result.reason?.message || String(result.reason);
+      if (errorMsg.includes('429') || errorMsg.includes('rate')) rateLimitHits++;
+      results.set(url, new Error(errorMsg));
+    }
+  }
+
+  return { results, rateLimitHits };
+}
+
+/**
+ * Phase 2: Redistribute surplus comments to truncated posts
+ */
+async function redistributeComments(
+  client: RedditClient,
+  allResults: Map<string, PostResult | Error>,
+  allocation: CommentAllocation,
+  initialPerPost: number,
+): Promise<number> {
+  let surplus = 0;
+  const truncatedUrls: string[] = [];
+  let rateLimitHits = 0;
+
+  for (const [url, result] of allResults) {
+    if (result instanceof Error) continue;
+    const used = result.comments.length;
+    if (used < initialPerPost) {
+      surplus += initialPerPost - used;
+    } else if (result.post.commentCount > used) {
+      truncatedUrls.push(url);
+    }
+  }
+
+  if (surplus > 0 && truncatedUrls.length > 0) {
+    const extraPerPost = Math.min(
+      Math.floor(surplus / truncatedUrls.length),
+      REDDIT.MAX_COMMENTS_PER_POST,
+    );
+    const newLimit = Math.min(initialPerPost + extraPerPost, REDDIT.MAX_COMMENTS_PER_POST);
+
+    allocation.redistributed = true;
+    mcpLog('info', `Phase 2: Redistributing ${surplus} surplus comments to ${truncatedUrls.length} truncated post(s) (${initialPerPost} → ${newLimit}/post)`, 'reddit');
+
+    const refetchResults = await pMapSettled(
+      truncatedUrls,
+      url => client.getPost(url, newLimit),
+      5,
+    );
+
+    for (let i = 0; i < refetchResults.length; i++) {
+      const result = refetchResults[i];
+      if (!result) continue;
+      const url = truncatedUrls[i] ?? '';
+      if (result.status === 'fulfilled') {
+        allResults.set(url, result.value);
+      } else {
+        const errorMsg = result.reason?.message || String(result.reason);
+        if (errorMsg.includes('429') || errorMsg.includes('rate')) rateLimitHits++;
+      }
+    }
+
+    mcpLog('info', `Phase 2 complete: re-fetched ${truncatedUrls.length} post(s)`, 'reddit');
+  }
+
+  return rateLimitHits;
+}
+
+// ── RedditClient Class ──
+
 export class RedditClient {
-  // Instance-level references (now point to module cache)
-  // User agent uses centralized version from package.json - auto-synced!
   private userAgent = `script:${USER_AGENT_VERSION} (by /u/research-powerpack)`;
 
   constructor(private clientId: string, private clientSecret: string) {}
@@ -93,13 +352,11 @@ export class RedditClient {
    * Returns null on failure instead of throwing
    */
   private async auth(): Promise<string | null> {
-    // Return module-cached token if still valid (with 60s buffer)
-    if (cachedToken && Date.now() < cachedTokenExpiry - 60000) {
+    if (cachedToken && Date.now() < cachedTokenExpiry - TOKEN_EXPIRY_MS) {
       if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Token cache HIT');
       return cachedToken;
     }
 
-    // Deduplicate concurrent auth calls - if one is already in flight, await it
     if (pendingAuthPromise) {
       if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Auth already in flight, awaiting...');
       return pendingAuthPromise;
@@ -113,9 +370,6 @@ export class RedditClient {
     }
   }
 
-  /**
-   * Internal auth implementation - called only once per cache miss
-   */
   private async performAuth(): Promise<string | null> {
     if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Token cache MISS - authenticating');
 
@@ -123,7 +377,7 @@ export class RedditClient {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const res = await fetchWithTimeout('https://www.reddit.com/api/v1/access_token', {
+        const res = await fetchWithTimeout(REDDIT_TOKEN_URL, {
           method: 'POST',
           headers: {
             'Authorization': `Basic ${credentials}`,
@@ -138,16 +392,14 @@ export class RedditClient {
           const text = await res.text().catch(() => '');
           mcpLog('error', `Auth failed (${res.status}): ${text}`, 'reddit');
 
-          // 401/403 are not retryable - invalidate cache
           if (res.status === 401 || res.status === 403) {
             cachedToken = null;
             cachedTokenExpiry = 0;
             return null;
           }
 
-          // Retry on server errors
           if (res.status >= 500 && attempt < 2) {
-            await sleep(REDDIT.RETRY_DELAYS[attempt] || 2000);
+            await sleep(calculateBackoff(attempt));
             continue;
           }
 
@@ -160,7 +412,6 @@ export class RedditClient {
           return null;
         }
 
-        // Update module-level cache (shared across all instances)
         cachedToken = data.access_token;
         cachedTokenExpiry = Date.now() + (data.expires_in || 3600) * 1000;
         return cachedToken;
@@ -169,14 +420,13 @@ export class RedditClient {
         const err = classifyError(error);
         mcpLog('error', `Auth error (attempt ${attempt + 1}): ${err.message}`, 'reddit');
 
-        // Invalidate cache on auth errors
         if (err.code === ErrorCode.AUTH_ERROR) {
           cachedToken = null;
           cachedTokenExpiry = 0;
         }
 
         if (attempt < 2 && err.retryable) {
-          await sleep(REDDIT.RETRY_DELAYS[attempt] || 2000);
+          await sleep(calculateBackoff(attempt));
           continue;
         }
 
@@ -189,7 +439,7 @@ export class RedditClient {
 
   private parseUrl(url: string): { sub: string; id: string } | null {
     const m = url.match(/reddit\.com\/r\/([^\/]+)\/comments\/([a-z0-9]+)/i);
-    return m ? { sub: m[1], id: m[2] } : null;
+    return m ? { sub: m[1]!, id: m[2]! } : null;
   }
 
   /**
@@ -202,91 +452,35 @@ export class RedditClient {
       throw new Error(`Invalid Reddit URL format: ${url}`);
     }
 
-    // Auth - returns null on failure
     const token = await this.auth();
     if (!token) {
       throw new Error('Reddit authentication failed - check credentials');
     }
 
-    const limit = Math.min(maxComments, 500);
     let lastError: StructuredError | null = null;
 
     for (let attempt = 0; attempt < REDDIT.RETRY_COUNT; attempt++) {
       try {
-        const apiUrl = `https://oauth.reddit.com/r/${parsed.sub}/comments/${parsed.id}?sort=top&limit=${limit}&depth=10&raw_json=1`;
-
-        const res = await fetchWithTimeout(apiUrl, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'User-Agent': this.userAgent,
-          },
-          timeoutMs: 30000,
-        });
-
-        // Rate limited - always retry with backoff
-        if (res.status === 429) {
-          const delay = REDDIT.RETRY_DELAYS[attempt] || 32000;
-          mcpLog('warning', `Rate limited. Retry ${attempt + 1}/${REDDIT.RETRY_COUNT} after ${delay}ms`, 'reddit');
-          await sleep(delay);
-          continue;
-        }
-
-        // 404 - Post doesn't exist
-        if (res.status === 404) {
-          throw new Error(`Post not found: ${url}`);
-        }
-
-        // Other errors
-        if (!res.ok) {
-          lastError = classifyError({ status: res.status });
-
-          if (lastError.retryable && attempt < REDDIT.RETRY_COUNT - 1) {
-            const delay = REDDIT.RETRY_DELAYS[attempt] || 2000;
-            mcpLog('warning', `API error ${res.status}. Retry ${attempt + 1}/${REDDIT.RETRY_COUNT}`, 'reddit');
-            await sleep(delay);
-            continue;
-          }
-
-          throw new Error(`Reddit API error: ${res.status}`);
-        }
-
-        // Parse response safely
-        let data: [any, any];
-        try {
-          data = await res.json() as [any, any];
-        } catch (parseError) {
-          throw new Error('Failed to parse Reddit API response');
-        }
-
+        const data = await fetchRedditJson(parsed.sub, parsed.id, maxComments, token, this.userAgent);
         const [postListing, commentListing] = data;
-        const p = postListing?.data?.children?.[0]?.data;
 
-        if (!p) {
-          throw new Error(`Post data not found in response: ${url}`);
-        }
-
-        const post: Post = {
-          title: p.title || 'Untitled',
-          author: p.author || '[deleted]',
-          subreddit: p.subreddit || parsed.sub,
-          body: this.formatBody(p),
-          score: p.score || 0,
-          commentCount: p.num_comments || 0,
-          url: `https://reddit.com${p.permalink || ''}`,
-          created: new Date((p.created_utc || 0) * 1000),
-          flair: p.link_flair_text || undefined,
-          isNsfw: p.over_18 || false,
-          isPinned: p.stickied || false,
-        };
-
-        const comments = this.extractComments(commentListing?.data?.children || [], maxComments, post.author);
+        const post = parsePostData(postListing, parsed.sub);
+        const comments = parseCommentTree(commentListing, maxComments, post.author);
 
         return { post, comments, allocatedComments: maxComments, actualComments: post.commentCount };
 
       } catch (error) {
         lastError = classifyError(error);
 
-        // Don't retry non-retryable errors
+        // Rate limited — always retry with backoff
+        const status = (error as Error & { status?: number }).status;
+        if (status === 429) {
+          const delay = REDDIT.RETRY_DELAYS[attempt] || 32000;
+          mcpLog('warning', `Rate limited. Retry ${attempt + 1}/${REDDIT.RETRY_COUNT} after ${delay}ms`, 'reddit');
+          await sleep(delay);
+          continue;
+        }
+
         if (!lastError.retryable) {
           throw error instanceof Error ? error : new Error(lastError.message);
         }
@@ -299,54 +493,17 @@ export class RedditClient {
       }
     }
 
-    // All retries exhausted
     throw new Error(lastError?.message || 'Failed to fetch Reddit post after retries');
-  }
-
-  private formatBody(p: any): string {
-    if (p.selftext?.trim()) return p.selftext;
-    if (p.is_self) return '';
-    if (p.url) return `**Link:** ${p.url}`;
-    return '';
-  }
-
-  private extractComments(children: any[], maxComments: number, opAuthor: string): Comment[] {
-    const result: Comment[] = [];
-    
-    const extract = (items: any[], depth = 0) => {
-      const sorted = [...items].sort((a, b) => (b.data?.score || 0) - (a.data?.score || 0));
-      
-      for (const c of sorted) {
-        if (result.length >= maxComments) return;
-        if (c.kind !== 't1' || !c.data?.author || c.data.author === '[deleted]') continue;
-        
-        result.push({
-          author: c.data.author,
-          body: c.data.body || '',
-          score: c.data.score || 0,
-          depth,
-          isOP: c.data.author === opAuthor,
-        });
-        
-        if (c.data.replies?.data?.children && result.length < maxComments) {
-          extract(c.data.replies.data.children, depth + 1);
-        }
-      }
-    };
-
-    extract(children);
-    return result;
   }
 
   async getPosts(urls: string[], maxComments = 100): Promise<Map<string, PostResult | Error>> {
     if (urls.length <= REDDIT.BATCH_SIZE) {
-      // Limit to 5 concurrent Reddit API calls
       const results = await pMap(
         urls,
         u => this.getPost(u, maxComments).catch(e => e as Error),
-        5
+        5,
       );
-      return new Map(urls.map((u, i) => [u, results[i]]));
+      return new Map(urls.map((u, i) => [u, results[i]!]));
     }
     return (await this.batchGetPosts(urls, maxComments)).results;
   }
@@ -355,7 +512,7 @@ export class RedditClient {
     urls: string[],
     maxCommentsOverride?: number,
     fetchComments = true,
-    onBatchComplete?: (batchNum: number, totalBatches: number, processed: number) => void
+    onBatchComplete?: (batchNum: number, totalBatches: number, processed: number) => void,
   ): Promise<BatchPostResult> {
     const allResults = new Map<string, PostResult | Error>();
     let rateLimitHits = 0;
@@ -373,24 +530,11 @@ export class RedditClient {
 
       mcpLog('info', `Batch ${batchNum + 1}/${totalBatches} (${batchUrls.length} posts)`, 'reddit');
 
-      const batchResults = await pMapSettled(
-        batchUrls,
-        url => this.getPost(url, initialPerPost),
-        5
-      );
-
-      for (let i = 0; i < batchResults.length; i++) {
-        const result = batchResults[i];
-        const url = batchUrls[i] || '';
-
-        if (result.status === 'fulfilled') {
-          allResults.set(url, result.value);
-        } else {
-          const errorMsg = result.reason?.message || String(result.reason);
-          if (errorMsg.includes('429') || errorMsg.includes('rate')) rateLimitHits++;
-          allResults.set(url, new Error(errorMsg));
-        }
+      const batchResult = await processBatch(this, batchUrls, initialPerPost);
+      for (const [url, result] of batchResult.results) {
+        allResults.set(url, result);
       }
+      rateLimitHits += batchResult.rateLimitHits;
 
       try {
         onBatchComplete?.(batchNum + 1, totalBatches, allResults.size);
@@ -407,52 +551,7 @@ export class RedditClient {
 
     // ── Phase 2: Redistribute surplus to truncated posts ──
     if (fetchComments && !maxCommentsOverride) {
-      // Calculate surplus from posts that used fewer comments than allocated
-      let surplus = 0;
-      const truncatedUrls: string[] = [];
-
-      for (const [url, result] of allResults) {
-        if (result instanceof Error) continue;
-        const used = result.comments.length;
-        if (used < initialPerPost) {
-          // Post had fewer comments than allocated — reclaim unused budget
-          surplus += initialPerPost - used;
-        } else if (result.post.commentCount > used) {
-          // Post was truncated — it has more comments than we fetched
-          truncatedUrls.push(url);
-        }
-      }
-
-      if (surplus > 0 && truncatedUrls.length > 0) {
-        const extraPerPost = Math.min(
-          Math.floor(surplus / truncatedUrls.length),
-          REDDIT.MAX_COMMENTS_PER_POST
-        );
-        const newLimit = Math.min(initialPerPost + extraPerPost, REDDIT.MAX_COMMENTS_PER_POST);
-
-        allocation.redistributed = true;
-        mcpLog('info', `Phase 2: Redistributing ${surplus} surplus comments to ${truncatedUrls.length} truncated post(s) (${initialPerPost} → ${newLimit}/post)`, 'reddit');
-
-        const refetchResults = await pMapSettled(
-          truncatedUrls,
-          url => this.getPost(url, newLimit),
-          5
-        );
-
-        for (let i = 0; i < refetchResults.length; i++) {
-          const result = refetchResults[i];
-          const url = truncatedUrls[i] || '';
-          if (result.status === 'fulfilled') {
-            allResults.set(url, result.value);
-          } else {
-            const errorMsg = result.reason?.message || String(result.reason);
-            if (errorMsg.includes('429') || errorMsg.includes('rate')) rateLimitHits++;
-            // Keep original result on re-fetch failure (don't overwrite with error)
-          }
-        }
-
-        mcpLog('info', `Phase 2 complete: re-fetched ${truncatedUrls.length} post(s)`, 'reddit');
-      }
+      rateLimitHits += await redistributeComments(this, allResults, allocation, initialPerPost);
     }
 
     return { results: allResults, batchesProcessed: totalBatches, totalPosts: urls.length, rateLimitHits, commentAllocation: allocation };

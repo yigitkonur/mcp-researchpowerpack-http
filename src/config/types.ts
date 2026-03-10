@@ -10,86 +10,86 @@ import type { Capabilities } from './index.js';
  */
 export interface YamlValidation {
   // String validations
-  minLength?: number;
-  maxLength?: number;
-  pattern?: string;
-  format?: 'uri' | 'email' | 'uuid';
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly pattern?: string;
+  readonly format?: 'uri' | 'email' | 'uuid';
 
   // Number validations
-  min?: number;
-  max?: number;
-  int?: boolean;
-  positive?: boolean;
-  negative?: boolean;
+  readonly min?: number;
+  readonly max?: number;
+  readonly int?: boolean;
+  readonly positive?: boolean;
+  readonly negative?: boolean;
 
   // Array validations
-  minItems?: number;
-  maxItems?: number;
-  nonempty?: boolean;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+  readonly nonempty?: boolean;
 }
 
 /**
  * Parameter definition in YAML
  */
 export interface YamlParameter {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object';
-  required?: boolean;
-  default?: unknown;
-  description?: string;
-  validation?: YamlValidation;
+  readonly type: 'string' | 'number' | 'boolean' | 'array' | 'object';
+  readonly required?: boolean;
+  readonly default?: unknown;
+  readonly description?: string;
+  readonly validation?: YamlValidation;
 
   // For array type
-  items?: YamlParameter;
+  readonly items?: YamlParameter;
 
   // For object type
-  properties?: Record<string, YamlParameter>;
+  readonly properties?: Record<string, YamlParameter>;
 }
 
 /**
  * Tool definition in YAML
  */
 export interface YamlToolConfig {
-  name: string;
-  category?: string;
-  capability?: keyof Capabilities;
-  description: string;
+  readonly name: string;
+  readonly category?: string;
+  readonly capability?: keyof Capabilities;
+  readonly description: string;
 
   // For tools with simple inline parameters
-  parameters?: Record<string, YamlParameter>;
+  readonly parameters?: Record<string, YamlParameter>;
 
   // For tools using existing Zod schemas
-  useZodSchema?: boolean;
-  zodSchemaRef?: string;
+  readonly useZodSchema?: boolean;
+  readonly zodSchemaRef?: string;
 
   // Description overrides for existing Zod schemas
-  schemaDescriptions?: Record<string, string>;
+  readonly schemaDescriptions?: Record<string, string>;
 
   // Configurable limits and settings
-  limits?: Record<string, string | number | boolean>;
+  readonly limits?: Record<string, string | number | boolean>;
 }
 
 /**
  * Root YAML configuration structure
  */
 export interface YamlConfig {
-  version: string;
-  metadata: {
-    name: string;
-    description: string;
+  readonly version: string;
+  readonly metadata: {
+    readonly name: string;
+    readonly description: string;
   };
-  tools: YamlToolConfig[];
+  readonly tools: readonly YamlToolConfig[];
 }
 
 /**
  * MCP Tool definition (matches SDK)
  */
 export interface McpTool {
-  name: string;
-  description: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: {
+    readonly type: 'object';
+    readonly properties: Record<string, unknown>;
+    readonly required?: string[];
   };
 }
 
@@ -97,8 +97,8 @@ export interface McpTool {
  * Loaded tool with additional metadata
  */
 export interface LoadedTool extends McpTool {
-  category?: string;
-  capability?: keyof Capabilities;
-  useZodSchema?: boolean;
-  zodSchemaRef?: string;
+  readonly category?: string;
+  readonly capability?: keyof Capabilities;
+  readonly useZodSchema?: boolean;
+  readonly zodSchemaRef?: string;
 }

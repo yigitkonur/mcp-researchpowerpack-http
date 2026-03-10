@@ -58,8 +58,8 @@ export type ToolLogger = (
  * Standard tool options passed to handlers
  */
 export interface ToolOptions {
-  sessionId?: string;
-  logger?: ToolLogger;
+  readonly sessionId?: string;
+  readonly logger?: ToolLogger;
 }
 
 // ============================================================================

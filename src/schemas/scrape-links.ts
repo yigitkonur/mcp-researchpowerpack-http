@@ -41,15 +41,15 @@ export type ScrapeLinksParams = z.infer<typeof scrapeLinksParamsSchema>;
 
 // Output type
 export interface ScrapeLinksOutput {
-  content: string;
-  metadata: {
-    total_urls: number;
-    successful: number;
-    failed: number;
-    total_credits: number;
-    execution_time_ms: number;
-    tokens_per_url?: number;
-    total_token_budget?: number;
-    batches_processed?: number;
+  readonly content: string;
+  readonly metadata: {
+    readonly total_urls: number;
+    readonly successful: number;
+    readonly failed: number;
+    readonly total_credits: number;
+    readonly execution_time_ms: number;
+    readonly tokens_per_url?: number;
+    readonly total_token_budget?: number;
+    readonly batches_processed?: number;
   };
 }

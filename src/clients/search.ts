@@ -12,42 +12,53 @@ import {
   ErrorCode,
   type StructuredError,
 } from '../utils/errors.js';
+import { calculateBackoff } from '../utils/retry.js';
 import { pMap } from '../utils/concurrency.js';
 import { mcpLog } from '../utils/logger.js';
 
+// ── Constants ──
+
+const SERPER_API_URL = 'https://google.serper.dev/search' as const;
+const DEFAULT_RESULTS_PER_KEYWORD = 10 as const;
+const MAX_SEARCH_CONCURRENCY = 8 as const;
+const MAX_RETRIES = 3 as const;
+
+// ── Data Interfaces ──
+
 interface SearchResult {
-  title: string;
-  link: string;
-  snippet: string;
-  date?: string;
-  position: number;
+  readonly title: string;
+  readonly link: string;
+  readonly snippet: string;
+  readonly date?: string;
+  readonly position: number;
 }
 
 export interface KeywordSearchResult {
-  keyword: string;
-  results: SearchResult[];
-  totalResults: number;
-  related: string[];
-  error?: StructuredError;
+  readonly keyword: string;
+  readonly results: SearchResult[];
+  readonly totalResults: number;
+  readonly related: string[];
+  readonly error?: StructuredError;
 }
 
 interface MultipleSearchResponse {
-  searches: KeywordSearchResult[];
-  totalKeywords: number;
-  executionTime: number;
-  error?: StructuredError;
+  readonly searches: KeywordSearchResult[];
+  readonly totalKeywords: number;
+  readonly executionTime: number;
+  readonly error?: StructuredError;
 }
 
 export interface RedditSearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-  date?: string;
+  readonly title: string;
+  readonly url: string;
+  readonly snippet: string;
+  readonly date?: string;
 }
 
-// Search retry configuration
+// ── Retry Configuration ──
+
 const SEARCH_RETRY_CONFIG = {
-  maxRetries: 2,
+  maxRetries: MAX_RETRIES,
   baseDelayMs: 1000,
   maxDelayMs: 10000,
   timeoutMs: 30000,
@@ -60,9 +71,110 @@ const REDDIT_SITE_REGEX = /site:\s*reddit\.com/i;
 const REDDIT_SUBREDDIT_SUFFIX_REGEX = / : r\/\w+$/;
 const REDDIT_SUFFIX_REGEX = / - Reddit$/;
 
+// ── Helper: Parse Serper search responses into structured results ──
+
+function parseSearchResponses(
+  responses: Array<Record<string, unknown>>,
+  keywords: string[],
+): KeywordSearchResult[] {
+  return responses.map((resp, index) => {
+    try {
+      const organic = (resp.organic || []) as Array<Record<string, unknown>>;
+      const results: SearchResult[] = organic.map((item, idx) => ({
+        title: (item.title as string) || 'No title',
+        link: (item.link as string) || '#',
+        snippet: (item.snippet as string) || '',
+        date: item.date as string | undefined,
+        position: (item.position as number) || idx + 1,
+      }));
+
+      const searchInfo = resp.searchInformation as Record<string, unknown> | undefined;
+      const totalResults = searchInfo?.totalResults
+        ? parseInt(String(searchInfo.totalResults).replace(/,/g, ''), 10)
+        : results.length;
+
+      const relatedSearches = (resp.relatedSearches || []) as Array<Record<string, unknown>>;
+      const related = relatedSearches.map((r) => (r.query as string) || '');
+
+      return { keyword: keywords[index] || '', results, totalResults, related };
+    } catch {
+      return { keyword: keywords[index] || '', results: [], totalResults: 0, related: [] };
+    }
+  });
+}
+
+// ── Helper: Execute search API call with retry ──
+
+async function executeSearchWithRetry(
+  apiKey: string,
+  body: unknown,
+  isRetryable: (status?: number, error?: unknown) => boolean,
+): Promise<{ data: unknown; error?: StructuredError }> {
+  let lastError: StructuredError | undefined;
+
+  for (let attempt = 0; attempt <= SEARCH_RETRY_CONFIG.maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        mcpLog('warning', `Retry attempt ${attempt}/${SEARCH_RETRY_CONFIG.maxRetries}`, 'search');
+      }
+
+      const response = await fetchWithTimeout(SERPER_API_URL, {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        timeoutMs: SEARCH_RETRY_CONFIG.timeoutMs,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        lastError = classifyError({ status: response.status, message: errorText });
+
+        if (isRetryable(response.status) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
+          const delayMs = calculateBackoff(attempt, SEARCH_RETRY_CONFIG.baseDelayMs, SEARCH_RETRY_CONFIG.maxDelayMs);
+          mcpLog('warning', `API returned ${response.status}, retrying in ${delayMs}ms...`, 'search');
+          await sleep(delayMs);
+          continue;
+        }
+
+        return { data: undefined, error: lastError };
+      }
+
+      try {
+        const data = await response.json();
+        return { data };
+      } catch {
+        return {
+          data: undefined,
+          error: { code: ErrorCode.PARSE_ERROR, message: 'Failed to parse search response', retryable: false },
+        };
+      }
+    } catch (error) {
+      lastError = classifyError(error);
+
+      if (isRetryable(undefined, error) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
+        const delayMs = calculateBackoff(attempt, SEARCH_RETRY_CONFIG.baseDelayMs, SEARCH_RETRY_CONFIG.maxDelayMs);
+        mcpLog('warning', `${lastError.code}: ${lastError.message}, retrying in ${delayMs}ms...`, 'search');
+        await sleep(delayMs);
+        continue;
+      }
+
+      return { data: undefined, error: lastError };
+    }
+  }
+
+  return {
+    data: undefined,
+    error: lastError || { code: ErrorCode.UNKNOWN_ERROR, message: 'Search failed', retryable: false },
+  };
+}
+
+// ── SearchClient ──
+
 export class SearchClient {
   private apiKey: string;
-  private baseURL = 'https://google.serper.dev';
 
   constructor(apiKey?: string) {
     const env = parseEnv();
@@ -74,21 +186,15 @@ export class SearchClient {
   }
 
   /**
-   * Calculate backoff delay
-   */
-  private calculateBackoff(attempt: number): number {
-    const exponentialDelay = SEARCH_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt);
-    const jitter = Math.random() * 0.3 * exponentialDelay;
-    return Math.min(exponentialDelay + jitter, SEARCH_RETRY_CONFIG.maxDelayMs);
-  }
-
-  /**
    * Check if error is retryable
    */
   private isRetryable(status?: number, error?: unknown): boolean {
     if (status && RETRYABLE_SEARCH_CODES.has(status)) return true;
-    
-    const message = (error as { message?: string })?.message?.toLowerCase() || '';
+
+    if (error == null) return false;
+    const message = (typeof error === 'object' && 'message' in error && typeof (error as { message?: string }).message === 'string')
+      ? (error as { message: string }).message.toLowerCase()
+      : '';
     return message.includes('timeout') || message.includes('rate limit') || message.includes('connection');
   }
 
@@ -108,110 +214,26 @@ export class SearchClient {
       };
     }
 
-    let lastError: StructuredError | undefined;
+    const searchQueries = keywords.map(keyword => ({ q: keyword }));
+    const { data, error } = await executeSearchWithRetry(
+      this.apiKey,
+      searchQueries,
+      (status, err) => this.isRetryable(status, err),
+    );
 
-    for (let attempt = 0; attempt <= SEARCH_RETRY_CONFIG.maxRetries; attempt++) {
-      try {
-        if (attempt > 0) {
-          mcpLog('warning', `Retry attempt ${attempt}/${SEARCH_RETRY_CONFIG.maxRetries}`, 'search');
-        }
-
-        const searchQueries = keywords.map(keyword => ({ q: keyword }));
-
-        const response = await fetchWithTimeout(`${this.baseURL}/search`, {
-          method: 'POST',
-          headers: {
-            'X-API-KEY': this.apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(searchQueries),
-          timeoutMs: SEARCH_RETRY_CONFIG.timeoutMs,
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '');
-          lastError = classifyError({ status: response.status, message: errorText });
-
-          if (this.isRetryable(response.status) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
-            const delayMs = this.calculateBackoff(attempt);
-            mcpLog('warning', `API returned ${response.status}, retrying in ${delayMs}ms...`, 'search');
-            await sleep(delayMs);
-            continue;
-          }
-
-          // Return partial result with error
-          return {
-            searches: [],
-            totalKeywords: keywords.length,
-            executionTime: Date.now() - startTime,
-            error: lastError,
-          };
-        }
-
-        // Parse response safely
-        let data: unknown;
-        try {
-          data = await response.json();
-        } catch (parseError) {
-          return {
-            searches: [],
-            totalKeywords: keywords.length,
-            executionTime: Date.now() - startTime,
-            error: { code: ErrorCode.PARSE_ERROR, message: 'Failed to parse search response', retryable: false },
-          };
-        }
-
-        const responses = Array.isArray(data) ? data : [data];
-
-        const searches: KeywordSearchResult[] = responses.map((resp: Record<string, unknown>, index: number) => {
-          try {
-            const organic = (resp.organic || []) as Array<Record<string, unknown>>;
-            const results: SearchResult[] = organic.map((item: Record<string, unknown>, idx: number) => ({
-              title: (item.title as string) || 'No title',
-              link: (item.link as string) || '#',
-              snippet: (item.snippet as string) || '',
-              date: item.date as string | undefined,
-              position: (item.position as number) || idx + 1,
-            }));
-
-            const searchInfo = resp.searchInformation as Record<string, unknown> | undefined;
-            const totalResults = searchInfo?.totalResults
-              ? parseInt(String(searchInfo.totalResults).replace(/,/g, ''), 10)
-              : results.length;
-
-            const relatedSearches = (resp.relatedSearches || []) as Array<Record<string, unknown>>;
-            const related = relatedSearches.map((r: Record<string, unknown>) => (r.query as string) || '');
-
-            return { keyword: keywords[index] || '', results, totalResults, related };
-          } catch {
-            // Return empty result for this keyword on parse error
-            return { keyword: keywords[index] || '', results: [], totalResults: 0, related: [] };
-          }
-        });
-
-        return { searches, totalKeywords: keywords.length, executionTime: Date.now() - startTime };
-
-      } catch (error) {
-        lastError = classifyError(error);
-
-        if (this.isRetryable(undefined, error) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
-          const delayMs = this.calculateBackoff(attempt);
-          mcpLog('warning', `${lastError.code}: ${lastError.message}, retrying in ${delayMs}ms...`, 'search');
-          await sleep(delayMs);
-          continue;
-        }
-
-        break;
-      }
+    if (error || data === undefined) {
+      return {
+        searches: [],
+        totalKeywords: keywords.length,
+        executionTime: Date.now() - startTime,
+        error,
+      };
     }
 
-    // All retries failed
-    return {
-      searches: [],
-      totalKeywords: keywords.length,
-      executionTime: Date.now() - startTime,
-      error: lastError || { code: ErrorCode.UNKNOWN_ERROR, message: 'Search failed', retryable: false },
-    };
+    const responses = Array.isArray(data) ? data : [data];
+    const searches = parseSearchResponses(responses as Array<Record<string, unknown>>, keywords);
+
+    return { searches, totalKeywords: keywords.length, executionTime: Date.now() - startTime };
   }
 
   /**
@@ -231,16 +253,16 @@ export class SearchClient {
 
     for (let attempt = 0; attempt <= SEARCH_RETRY_CONFIG.maxRetries; attempt++) {
       try {
-        const res = await fetchWithTimeout(`${this.baseURL}/search`, {
+        const res = await fetchWithTimeout(SERPER_API_URL, {
           method: 'POST',
           headers: { 'X-API-KEY': this.apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ q, num: 10 }),
+          body: JSON.stringify({ q, num: DEFAULT_RESULTS_PER_KEYWORD }),
           timeoutMs: SEARCH_RETRY_CONFIG.timeoutMs,
         });
 
         if (!res.ok) {
           if (this.isRetryable(res.status) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
-            const delayMs = this.calculateBackoff(attempt);
+            const delayMs = calculateBackoff(attempt, SEARCH_RETRY_CONFIG.baseDelayMs, SEARCH_RETRY_CONFIG.maxDelayMs);
             mcpLog('warning', `Reddit search ${res.status}, retrying in ${delayMs}ms...`, 'search');
             await sleep(delayMs);
             continue;
@@ -260,7 +282,7 @@ export class SearchClient {
       } catch (error) {
         const err = classifyError(error);
         if (this.isRetryable(undefined, error) && attempt < SEARCH_RETRY_CONFIG.maxRetries) {
-          const delayMs = this.calculateBackoff(attempt);
+          const delayMs = calculateBackoff(attempt, SEARCH_RETRY_CONFIG.baseDelayMs, SEARCH_RETRY_CONFIG.maxDelayMs);
           mcpLog('warning', `Reddit search ${err.code}, retrying in ${delayMs}ms...`, 'search');
           await sleep(delayMs);
           continue;
@@ -282,11 +304,10 @@ export class SearchClient {
       return new Map();
     }
 
-    // Limit to 8 concurrent Serper API calls to prevent CPU spikes & rate limits
     const results = await pMap(
       queries,
       q => this.searchReddit(q, dateAfter),
-      8
+      MAX_SEARCH_CONCURRENCY
     );
 
     return new Map(queries.map((q, i) => [q, results[i] || []]));

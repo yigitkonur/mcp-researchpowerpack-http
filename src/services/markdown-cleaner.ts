@@ -12,8 +12,8 @@ const turndown = new TurndownService({
 // Remove script, style, nav, footer, aside elements
 turndown.remove(['script', 'style', 'nav', 'footer', 'aside', 'noscript']);
 
-// ~512K characters (not bytes) - prevents event loop blocking on huge pages
-const MAX_HTML_SIZE = 512 * 1024;
+/** Maximum HTML content length in characters — prevents event loop blocking on huge pages */
+const MAX_CONTENT_LENGTH = 524_288 as const; // 512 * 1024
 
 /**
  * Remove HTML comments using linear-time indexOf loop.
@@ -54,8 +54,8 @@ export class MarkdownCleaner {
       }
 
       // Truncate oversized HTML to prevent blocking the event loop
-      if (htmlContent.length > MAX_HTML_SIZE) {
-        htmlContent = htmlContent.substring(0, MAX_HTML_SIZE);
+      if (htmlContent.length > MAX_CONTENT_LENGTH) {
+        htmlContent = htmlContent.substring(0, MAX_CONTENT_LENGTH);
       }
 
       // Remove HTML comments before conversion (linear-time)

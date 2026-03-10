@@ -17,7 +17,7 @@
  * @returns Array of results in the same order as input items
  */
 export async function pMap<T, R>(
-  items: T[],
+  items: readonly T[],
   mapper: (item: T, index: number) => Promise<R>,
   concurrency: number = 6
 ): Promise<R[]> {
@@ -32,7 +32,7 @@ export async function pMap<T, R>(
   async function worker(): Promise<void> {
     while (nextIndex < items.length) {
       const index = nextIndex++;
-      results[index] = await mapper(items[index], index);
+      results[index] = await mapper(items[index]!, index);
     }
   }
 
@@ -56,7 +56,7 @@ export async function pMap<T, R>(
  * @returns Array of PromiseSettledResult in the same order as input items
  */
 export async function pMapSettled<T, R>(
-  items: T[],
+  items: readonly T[],
   mapper: (item: T, index: number) => Promise<R>,
   concurrency: number = 6
 ): Promise<PromiseSettledResult<R>[]> {
@@ -71,7 +71,7 @@ export async function pMapSettled<T, R>(
     while (nextIndex < items.length) {
       const index = nextIndex++;
       try {
-        const value = await mapper(items[index], index);
+        const value = await mapper(items[index]!, index);
         results[index] = { status: 'fulfilled', value };
       } catch (reason) {
         results[index] = { status: 'rejected', reason };

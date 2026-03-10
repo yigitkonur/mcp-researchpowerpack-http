@@ -12,35 +12,61 @@ import {
   ErrorCode,
   type StructuredError,
 } from '../utils/errors.js';
+import { calculateBackoff } from '../utils/retry.js';
 import { pMapSettled } from '../utils/concurrency.js';
 import { mcpLog } from '../utils/logger.js';
 
+// ── Constants ──
+
+const SCRAPE_MODES = ['basic', 'javascript', 'javascript_geo'] as const;
+type ScrapeMode = typeof SCRAPE_MODES[number];
+
+const CREDIT_COSTS: Record<string, number> = { basic: 1, javascript: 5, javascript_geo: 5 } as const;
+const DEFAULT_SCRAPE_CONCURRENCY = 10 as const;
+const SCRAPE_BATCH_SIZE = 30 as const;
+const MAX_RETRIES = 3 as const;
+
+// ── Interfaces ──
+
 interface ScrapeRequest {
-  url: string;
-  mode?: 'basic' | 'javascript';
-  timeout?: number;
-  country?: string;
+  readonly url: string;
+  readonly mode?: 'basic' | 'javascript';
+  readonly timeout?: number;
+  readonly country?: string;
 }
 
 interface ScrapeResponse {
-  content: string;
-  statusCode: number;
-  credits: number;
-  headers?: Record<string, string>;
-  error?: StructuredError;
+  readonly content: string;
+  readonly statusCode: number;
+  readonly credits: number;
+  readonly headers?: Record<string, string>;
+  readonly error?: StructuredError;
 }
 
 interface BatchScrapeResult {
-  results: Array<ScrapeResponse & { url: string }>;
-  batchesProcessed: number;
-  totalAttempted: number;
-  rateLimitHits: number;
+  readonly results: ReadonlyArray<ScrapeResponse & { readonly url: string }>;
+  readonly batchesProcessed: number;
+  readonly totalAttempted: number;
+  readonly rateLimitHits: number;
 }
 
 // Status codes that indicate we should retry (no credit consumed)
 const RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504, 510]);
 // Status codes that are permanent failures (don't retry)
 const PERMANENT_FAILURE_CODES = new Set([400, 401, 403]);
+
+/** Fallback attempt descriptor used by scrapeWithFallback */
+interface FallbackAttempt {
+  readonly mode: 'basic' | 'javascript';
+  readonly country?: string;
+  readonly description: string;
+}
+
+const FALLBACK_ATTEMPTS: readonly FallbackAttempt[] = [
+  { mode: 'basic', description: 'basic mode' },
+  { mode: 'javascript', description: 'javascript rendering' },
+  { mode: 'javascript', country: 'us', description: 'javascript + US geo-targeting' },
+] as const;
 
 export class ScraperClient {
   private apiKey: string;
@@ -59,9 +85,9 @@ export class ScraperClient {
    * Scrape a single URL with retry logic
    * NEVER throws - always returns a ScrapeResponse (possibly with error)
    */
-  async scrape(request: ScrapeRequest, maxRetries = SCRAPER.RETRY_COUNT): Promise<ScrapeResponse> {
+  async scrape(request: ScrapeRequest, maxRetries = MAX_RETRIES): Promise<ScrapeResponse> {
     const { url, mode = 'basic', timeout = 30, country } = request;
-    const credits = mode === 'javascript' ? 5 : 1;
+    const credits = CREDIT_COSTS[mode] ?? 1;
 
     // Validate URL first
     try {
@@ -157,7 +183,7 @@ export class ScraperClient {
           };
 
           if (attempt < maxRetries - 1) {
-            const delayMs = this.calculateBackoff(attempt);
+            const delayMs = calculateBackoff(attempt);
             mcpLog('warning', `${response.status} on attempt ${attempt + 1}/${maxRetries}. Retrying in ${delayMs}ms`, 'scraper');
             await sleep(delayMs);
             continue;
@@ -167,7 +193,7 @@ export class ScraperClient {
         // Other non-success status - treat as retryable
         lastError = classifyError({ status: response.status, message: content });
         if (attempt < maxRetries - 1 && lastError.retryable) {
-          const delayMs = this.calculateBackoff(attempt);
+          const delayMs = calculateBackoff(attempt);
           mcpLog('warning', `Status ${response.status}. Retrying in ${delayMs}ms`, 'scraper');
           await sleep(delayMs);
           continue;
@@ -196,7 +222,7 @@ export class ScraperClient {
 
         // Retryable error - continue if attempts remaining
         if (attempt < maxRetries - 1) {
-          const delayMs = this.calculateBackoff(attempt);
+          const delayMs = calculateBackoff(attempt);
           mcpLog('warning', `${lastError.code}: ${lastError.message}. Retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`, 'scraper');
           await sleep(delayMs);
           continue;
@@ -214,65 +240,30 @@ export class ScraperClient {
   }
 
   /**
-   * Calculate exponential backoff with jitter
-   */
-  private calculateBackoff(attempt: number): number {
-    const baseDelay = SCRAPER.RETRY_DELAYS[attempt] || 8000;
-    const jitter = Math.random() * 0.3 * baseDelay;
-    return Math.floor(baseDelay + jitter);
-  }
-
-  /**
    * Scrape with automatic fallback through different modes
    * NEVER throws - always returns a ScrapeResponse
    */
   async scrapeWithFallback(url: string, options: { timeout?: number } = {}): Promise<ScrapeResponse> {
-    const attempts: Array<{ mode: 'basic' | 'javascript'; country?: string; description: string }> = [
-      { mode: 'basic', description: 'basic mode' },
-      { mode: 'javascript', description: 'javascript rendering' },
-      { mode: 'javascript', country: 'us', description: 'javascript + US geo-targeting' },
-    ];
-
     const attemptResults: string[] = [];
     let lastResult: ScrapeResponse | null = null;
 
-    for (const attempt of attempts) {
-      // scrape() never throws, so no try-catch needed
-      const result = await this.scrape({
-        url,
-        mode: attempt.mode,
-        timeout: options.timeout,
-        country: attempt.country,
-      });
+    for (const attempt of FALLBACK_ATTEMPTS) {
+      const result = await this.tryFallbackAttempt(url, attempt, options);
 
-      lastResult = result;
-
-      // Success
-      if (result.statusCode >= 200 && result.statusCode < 300 && !result.error) {
+      if (result.done) {
         if (attemptResults.length > 0) {
           mcpLog('info', `Success with ${attempt.description} after ${attemptResults.length} fallback(s)`, 'scraper');
         }
-        return result;
+        return result.response;
       }
 
-      // 404 is a valid response, not an error
-      if (result.statusCode === 404) {
-        return result;
-      }
-
-      // Non-retryable errors - don't try other modes
-      if (result.error && !result.error.retryable) {
-        mcpLog('error', `Non-retryable error with ${attempt.description}: ${result.error.message}`, 'scraper');
-        return result;
-      }
-
-      // Collect failure reason and try next mode
-      attemptResults.push(`${attempt.description}: ${result.error?.message || result.statusCode}`);
-      mcpLog('warning', `Failed with ${attempt.description} (${result.statusCode}), trying next fallback...`, 'scraper');
+      lastResult = result.response;
+      attemptResults.push(`${attempt.description}: ${result.response.error?.message || result.response.statusCode}`);
+      mcpLog('warning', `Failed with ${attempt.description} (${result.response.statusCode}), trying next fallback...`, 'scraper');
     }
 
-    // All fallbacks exhausted - return last result with aggregated error info
-    const errorMessage = `Failed after ${attempts.length} fallback modes: ${attemptResults.join('; ')}`;
+    // All fallbacks exhausted
+    const errorMessage = `Failed after ${FALLBACK_ATTEMPTS.length} fallback modes: ${attemptResults.join('; ')}`;
     return {
       content: `Error: ${errorMessage}`,
       statusCode: lastResult?.statusCode || 500,
@@ -286,6 +277,41 @@ export class ScraperClient {
   }
 
   /**
+   * Execute a single fallback attempt and determine whether to continue.
+   * Returns { done: true } on success/terminal or { done: false } to try the next mode.
+   */
+  private async tryFallbackAttempt(
+    url: string,
+    attempt: FallbackAttempt,
+    options: { timeout?: number },
+  ): Promise<{ done: boolean; response: ScrapeResponse }> {
+    const result = await this.scrape({
+      url,
+      mode: attempt.mode,
+      timeout: options.timeout,
+      country: attempt.country,
+    });
+
+    // Success
+    if (result.statusCode >= 200 && result.statusCode < 300 && !result.error) {
+      return { done: true, response: result };
+    }
+
+    // 404 is a valid response, not an error
+    if (result.statusCode === 404) {
+      return { done: true, response: result };
+    }
+
+    // Non-retryable errors - don't try other modes
+    if (result.error && !result.error.retryable) {
+      mcpLog('error', `Non-retryable error with ${attempt.description}: ${result.error.message}`, 'scraper');
+      return { done: true, response: result };
+    }
+
+    return { done: false, response: result };
+  }
+
+  /**
    * Scrape multiple URLs with batching
    * NEVER throws - always returns results array
    */
@@ -294,12 +320,12 @@ export class ScraperClient {
       return [];
     }
 
-    if (urls.length <= SCRAPER.BATCH_SIZE) {
+    if (urls.length <= SCRAPE_BATCH_SIZE) {
       return this.processBatch(urls, options);
     }
 
     const result = await this.batchScrape(urls, options);
-    return result.results;
+    return [...result.results];
   }
 
   /**
@@ -311,29 +337,29 @@ export class ScraperClient {
     options: { timeout?: number } = {},
     onBatchComplete?: (batchNum: number, totalBatches: number, processed: number) => void
   ): Promise<BatchScrapeResult> {
-    const totalBatches = Math.ceil(urls.length / SCRAPER.BATCH_SIZE);
+    const totalBatches = Math.ceil(urls.length / SCRAPE_BATCH_SIZE);
     const allResults: Array<ScrapeResponse & { url: string }> = [];
     let rateLimitHits = 0;
 
     mcpLog('info', `Starting batch processing: ${urls.length} URLs in ${totalBatches} batch(es)`, 'scraper');
 
     for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
-      const startIdx = batchNum * SCRAPER.BATCH_SIZE;
-      const endIdx = Math.min(startIdx + SCRAPER.BATCH_SIZE, urls.length);
+      const startIdx = batchNum * SCRAPE_BATCH_SIZE;
+      const endIdx = Math.min(startIdx + SCRAPE_BATCH_SIZE, urls.length);
       const batchUrls = urls.slice(startIdx, endIdx);
 
       mcpLog('info', `Processing batch ${batchNum + 1}/${totalBatches} (${batchUrls.length} URLs)`, 'scraper');
 
-      // Limit to 10 concurrent scrapes within each batch to prevent connection exhaustion
       const batchResults = await pMapSettled(
         batchUrls,
         url => this.scrapeWithFallback(url, options),
-        10
+        DEFAULT_SCRAPE_CONCURRENCY
       );
 
       for (let i = 0; i < batchResults.length; i++) {
         const result = batchResults[i];
-        const url = batchUrls[i] || '';
+        if (!result) continue;
+        const url = batchUrls[i] ?? '';
 
         if (result.status === 'fulfilled') {
           const scrapeResult = result.value;
@@ -382,8 +408,7 @@ export class ScraperClient {
    * NEVER throws
    */
   private async processBatch(urls: string[], options: { timeout?: number }): Promise<Array<ScrapeResponse & { url: string }>> {
-    // Limit to 10 concurrent scrapes to prevent connection exhaustion
-    const results = await pMapSettled(urls, url => this.scrapeWithFallback(url, options), 10);
+    const results = await pMapSettled(urls, url => this.scrapeWithFallback(url, options), DEFAULT_SCRAPE_CONCURRENCY);
 
     return results.map((result, index) => {
       const url = urls[index] || '';

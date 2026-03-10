@@ -50,6 +50,20 @@ function safeParseInt(
 }
 
 // ============================================================================
+// Reasoning Effort Validation
+// ============================================================================
+
+const VALID_REASONING_EFFORTS = ['low', 'medium', 'high'] as const;
+type ReasoningEffort = typeof VALID_REASONING_EFFORTS[number];
+
+function parseReasoningEffort(value: string | undefined): ReasoningEffort {
+  if (value && VALID_REASONING_EFFORTS.includes(value as ReasoningEffort)) {
+    return value as ReasoningEffort;
+  }
+  return 'high';
+}
+
+// ============================================================================
 // Environment Parsing
 // ============================================================================
 
@@ -103,7 +117,7 @@ function getResearch(): ResearchConfig {
     FALLBACK_MODEL: process.env.RESEARCH_FALLBACK_MODEL || 'google/gemini-2.5-flash',
     API_KEY: process.env.OPENROUTER_API_KEY || '',
     TIMEOUT_MS: safeParseInt(process.env.API_TIMEOUT_MS, 1800000, 1000, 3600000),
-    REASONING_EFFORT: (process.env.DEFAULT_REASONING_EFFORT as 'low' | 'medium' | 'high') || 'high',
+    REASONING_EFFORT: parseReasoningEffort(process.env.DEFAULT_REASONING_EFFORT),
     MAX_URLS: safeParseInt(process.env.DEFAULT_MAX_URLS, 100, 10, 200),
   };
   return cachedResearch;
