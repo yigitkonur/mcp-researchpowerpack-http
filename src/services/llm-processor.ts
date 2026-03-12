@@ -49,7 +49,7 @@ interface LLMResult {
 
 // LLM-specific retry configuration
 const LLM_RETRY_CONFIG = {
-  maxRetries: 1,
+  maxRetries: 2,
   baseDelayMs: 1000,
   maxDelayMs: 5000,
 } as const;
@@ -109,6 +109,12 @@ export function createLLMProcessor(): OpenAI | null {
  */
 function isRetryableLLMError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
+
+  // Stall/timeout protection errors - always retry these
+  const stallCode = (error as { code?: string })?.code;
+  if (stallCode === 'ESTALLED' || stallCode === 'ETIMEDOUT') {
+    return true;
+  }
 
   // Check HTTP status codes
   if (hasStatus(error)) {
@@ -249,7 +255,7 @@ export async function processContentWithLLM(
           `LLM extraction (${activeModel})`,
         ),
         LLM_STALL_TIMEOUT_MS,
-        1,
+        3,
         `LLM extraction (${activeModel})`,
       );
 

@@ -79,7 +79,7 @@ export class ScraperClient {
     this.apiKey = apiKey || env.SCRAPER_API_KEY;
 
     if (!this.apiKey) {
-      throw new Error('SCRAPEDO_API_KEY is required');
+      throw new Error('Web scraping capability is not configured. Please set up the required API credentials.');
     }
   }
 

@@ -116,12 +116,12 @@ export class FileAttachmentService {
         path,
         content: formatted,
       };
-    } catch (error) {
+    } catch {
       return {
         success: false,
         path,
-        content: `## ❌ ${path}\n\n**ERROR READING FILE**: ${error instanceof Error ? error.message : String(error)}\n${description ? `\n*Description:* ${description}\n` : ''}`,
-        error: error instanceof Error ? error.message : String(error),
+        content: `## ❌ ${path}\n\n**ERROR READING FILE**: Unable to read the specified file. Please verify the file path exists and is accessible.\n${description ? `\n*Description:* ${description}\n` : ''}`,
+        error: 'Unable to read the specified file',
       };
     }
   }

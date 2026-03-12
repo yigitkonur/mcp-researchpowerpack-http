@@ -85,12 +85,21 @@ function classifyByErrorCode(error: { code?: string; message?: string }): Struct
   const errCode = error.code;
   if (!errCode) return null;
 
+  const networkErrorMessages: Record<string, string> = {
+    ECONNREFUSED: 'Connection refused — service may be down',
+    ECONNRESET: 'Connection was reset — please retry',
+    ECONNABORTED: 'Connection aborted — please retry',
+    ENOTFOUND: 'Service not reachable — check your network',
+    EPIPE: 'Connection lost — please retry',
+    EAI_AGAIN: 'DNS lookup failed — check your network',
+  };
+
   if (errCode === 'ECONNREFUSED' || errCode === 'ENOTFOUND' || errCode === 'ECONNRESET') {
-    return { code: ErrorCode.NETWORK_ERROR, message: `Network error: ${errCode}`, retryable: true, cause: error.message };
+    return { code: ErrorCode.NETWORK_ERROR, message: networkErrorMessages[errCode] || 'Network connection failed', retryable: true, cause: error.message };
   }
 
   if (errCode === 'ECONNABORTED' || errCode === 'ETIMEDOUT') {
-    return { code: ErrorCode.TIMEOUT, message: 'Request timed out', retryable: true, cause: error.message };
+    return { code: ErrorCode.TIMEOUT, message: networkErrorMessages[errCode] || 'Request timed out', retryable: true, cause: error.message };
   }
 
   return null;
@@ -430,7 +439,7 @@ export function withRequestTimeout<T>(
 
   return fn(controller.signal).finally(() => clearTimeout(timeoutId)).catch((err) => {
     if (controller.signal.aborted && err instanceof DOMException && err.name === 'AbortError') {
-      throw Object.assign(new Error(`${label} timed out after ${timeoutMs}ms`), {
+      throw Object.assign(new Error('Request timed out — please try again'), {
         code: 'ETIMEDOUT',
         retryable: true,
       });
@@ -463,7 +472,7 @@ export async function withStallProtection<T>(
     const stallPromise = new Promise<never>((_, reject) => {
       stallTimer = setTimeout(() => {
         controller.abort();
-        reject(Object.assign(new Error(`${label} stalled — no response for ${stallMs}ms (attempt ${attempt + 1}/${maxAttempts})`), {
+        reject(Object.assign(new Error(`Service temporarily unavailable — no response received (attempt ${attempt + 1}/${maxAttempts})`), {
           code: 'ESTALLED',
           retryable: attempt < maxAttempts - 1,
         }));

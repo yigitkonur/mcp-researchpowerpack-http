@@ -221,7 +221,7 @@ export class ResearchClient {
 
   constructor() {
     if (!RESEARCH.API_KEY) {
-      throw new Error('OPENROUTER_API_KEY is required for research');
+      throw new Error('Research capability is not configured. Please set up the required API credentials.');
     }
 
     this.client = new OpenAI({

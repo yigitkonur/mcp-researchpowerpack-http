@@ -181,7 +181,7 @@ export class SearchClient {
     this.apiKey = apiKey || env.SEARCH_API_KEY || '';
 
     if (!this.apiKey) {
-      throw new Error('SERPER_API_KEY is required for search functionality');
+      throw new Error('Web search capability is not configured. Please set up the required API credentials.');
     }
   }
 

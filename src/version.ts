@@ -15,7 +15,7 @@ import { dirname, join } from 'path';
 
 // Defaults used when running in Workers or if package.json cannot be loaded
 const DEFAULT_PACKAGE_INFO = {
-  version: '3.9.3',
+  version: '3.9.4',
   name: 'mcp-research-powerpack',
   description: 'Research Powerpack MCP Server',
 } as const;
