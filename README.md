@@ -100,6 +100,8 @@ Each key unlocks a capability. Missing keys silently disable their tools — the
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | `get_reddit_post` | Unlimited — [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) (script type) |
 | `SCRAPEDO_API_KEY` | `scrape_links` | 1,000 credits/mo — [scrape.do](https://scrape.do) |
 | `OPENROUTER_API_KEY` | `deep_research`, LLM extraction | Pay-per-token — [openrouter.ai](https://openrouter.ai) |
+| `CEREBRAS_API_KEY` | Cerebras LLM extraction | — |
+| `USE_CEREBRAS` | Enable Cerebras for extraction (set `true`) | `false` |
 
 ## Configuration
 
@@ -115,6 +117,31 @@ Optional tuning via environment variables:
 | `API_TIMEOUT_MS` | `1800000` | Request timeout in ms (default: 30 min) |
 | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
 | `MCP_PORT` | `3000` | Port for HTTP mode |
+| `USE_CEREBRAS` | `false` | Set to `true` to use Cerebras for extraction instead of OpenRouter |
+| `CEREBRAS_API_KEY` | — | API key for Cerebras cloud — [cloud.cerebras.ai](https://cloud.cerebras.ai) |
+
+### Cerebras Support
+
+When `USE_CEREBRAS=true` and `CEREBRAS_API_KEY` are set, the `scrape_links` tool uses Cerebras (Z.ai GLM 4.7) for AI content extraction instead of OpenRouter. This provides:
+
+- **Ultra-fast extraction** — Cerebras inference is optimized for speed
+- **Independent from OpenRouter** — extraction works even without `OPENROUTER_API_KEY`
+- **Automatic fallback** — if Cerebras is not configured, falls back to OpenRouter
+
+```bash
+# Enable Cerebras for extraction
+USE_CEREBRAS=true CEREBRAS_API_KEY=your-key npx mcp-research-powerpack
+```
+
+### Network Resilience
+
+All LLM API calls include built-in stability protections:
+
+- **Request deadlines** — hard timeout prevents calls from hanging indefinitely
+- **Stall detection** — if no response arrives within a threshold, the request is aborted and retried
+- **Exponential backoff** — transient failures (429, 5xx) retry with jitter to avoid thundering herd
+- **Connection loss recovery** — network errors (ECONNRESET, ECONNREFUSED) trigger automatic retry
+- **Graceful degradation** — all tools return structured errors instead of crashing
 
 ## How It Works
 

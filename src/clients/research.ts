@@ -11,6 +11,8 @@ import {
   classifyError,
   sleep,
   ErrorCode,
+  withRequestTimeout,
+  withStallProtection,
   type StructuredError,
 } from '../utils/errors.js';
 import { mcpLog } from '../utils/logger.js';
@@ -24,6 +26,12 @@ const RESEARCH_BASE_DELAY_MS = 5_000 as const;
 const RESEARCH_MAX_DELAY_MS = 60_000 as const;
 const DEFAULT_MAX_TOKENS = 32_000 as const;
 const MAX_SEARCH_RESULTS_CAP = 30 as const;
+
+/** Hard deadline for a single research API call */
+const RESEARCH_REQUEST_DEADLINE_MS = 120_000 as const;
+
+/** Stall detection — abort if no response for this duration */
+const RESEARCH_STALL_TIMEOUT_MS = 90_000 as const;
 
 // Retryable status codes for research API
 const RETRYABLE_RESEARCH_CODES = new Set([429, 500, 502, 503, 504]);
@@ -246,8 +254,14 @@ export class ResearchClient {
       message.includes('timeout') ||
       message.includes('timed out') ||
       message.includes('service unavailable') ||
-      message.includes('connection')
+      message.includes('connection') ||
+      message.includes('stalled')
     ) {
+      return true;
+    }
+
+    // Check for stall protection errors
+    if (err.code === 'ESTALLED' || err.code === 'ETIMEDOUT') {
       return true;
     }
 
@@ -271,9 +285,27 @@ export class ResearchClient {
           mcpLog('warning', `Retry attempt ${attempt}/${MAX_RESEARCH_RETRIES} for ${model}`, 'research');
         }
 
-        const response = await this.client.chat.completions.create(
-          payload as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
-          { signal }
+        const response = await withStallProtection(
+          (stallSignal) => withRequestTimeout(
+            (timeoutSignal) => {
+              // Merge all abort signals (external + stall + timeout)
+              const mergedController = new AbortController();
+              const abortMerged = () => mergedController.abort();
+              signal?.addEventListener('abort', abortMerged, { once: true });
+              stallSignal.addEventListener('abort', abortMerged, { once: true });
+              timeoutSignal.addEventListener('abort', abortMerged, { once: true });
+
+              return this.client.chat.completions.create(
+                payload as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+                { signal: mergedController.signal }
+              );
+            },
+            RESEARCH_REQUEST_DEADLINE_MS,
+            `research (${model})`,
+          ),
+          RESEARCH_STALL_TIMEOUT_MS,
+          2,
+          `research (${model})`,
         );
         const choice = response.choices?.[0];
         const message = choice?.message as unknown as OpenRouterMessage;

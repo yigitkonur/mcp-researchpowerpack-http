@@ -408,3 +408,86 @@ export function createToolErrorFromStructured(
   
   return createToolError(errorText, errorCode, retryAfter);
 }
+
+// ============================================================================
+// Stability Wrappers — Network resilience for LLM API calls
+// ============================================================================
+
+/**
+ * Wrap a promise with a hard deadline timeout.
+ * If the promise doesn't resolve/reject within `timeoutMs`, it rejects with a timeout error.
+ * Uses AbortController to signal cancellation to the underlying request.
+ */
+export function withRequestTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string = 'request',
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  return fn(controller.signal).finally(() => clearTimeout(timeoutId)).catch((err) => {
+    if (controller.signal.aborted && err instanceof DOMException && err.name === 'AbortError') {
+      throw Object.assign(new Error(`${label} timed out after ${timeoutMs}ms`), {
+        code: 'ETIMEDOUT',
+        retryable: true,
+      });
+    }
+    throw err;
+  });
+}
+
+/**
+ * Wrap a non-streaming API call with activity-based timeout detection.
+ * If the call hasn't completed within `stallMs`, abort and retry.
+ * This catches "stuck" connections where TCP stays open but no data flows.
+ *
+ * @param fn - Async function that accepts an AbortSignal
+ * @param stallMs - Max milliseconds to wait for the call to complete before considering it stuck
+ * @param maxAttempts - Max retry attempts for stalled requests
+ * @param label - Label for log messages
+ * @returns The result of the function
+ */
+export async function withStallProtection<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  stallMs: number,
+  maxAttempts: number = 2,
+  label: string = 'request',
+): Promise<T> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const controller = new AbortController();
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const stallPromise = new Promise<never>((_, reject) => {
+      stallTimer = setTimeout(() => {
+        controller.abort();
+        reject(Object.assign(new Error(`${label} stalled — no response for ${stallMs}ms (attempt ${attempt + 1}/${maxAttempts})`), {
+          code: 'ESTALLED',
+          retryable: attempt < maxAttempts - 1,
+        }));
+      }, stallMs);
+    });
+
+    try {
+      const result = await Promise.race([fn(controller.signal), stallPromise]);
+      clearTimeout(stallTimer);
+      return result;
+    } catch (err) {
+      clearTimeout(stallTimer);
+      const isStall = err instanceof Error && (err as NodeJS.ErrnoException).code === 'ESTALLED';
+      if (isStall && attempt < maxAttempts - 1) {
+        const backoff = calculateBackoff(attempt, DEFAULT_RETRY_OPTIONS);
+        // Dynamic import to avoid circular — mcpLog is optional here
+        try {
+          const { mcpLog } = await import('../utils/logger.js');
+          mcpLog('warning', `${label} stalled, retrying in ${backoff}ms (attempt ${attempt + 1})`, 'stability');
+        } catch { /* logger unavailable, continue silently */ }
+        await sleep(backoff);
+        continue;
+      }
+      throw err;
+    }
+  }
+  // Should never reach here, but TypeScript needs it
+  throw new Error(`${label} failed after ${maxAttempts} stall-protection attempts`);
+}

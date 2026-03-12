@@ -43,19 +43,23 @@ Server starts with any configuration — tools are silently disabled if their AP
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | `get_reddit_post` | unlimited |
 | `SCRAPEDO_API_KEY` | `scrape_links` | 1,000 credits/mo |
 | `OPENROUTER_API_KEY` | `deep_research`, `use_llm` in scrape_links | pay-as-you-go |
+| `CEREBRAS_API_KEY` | Cerebras for `scrape_links` extraction | — |
+| `USE_CEREBRAS` | Enable Cerebras extraction (`true`/`false`) | `false` |
 
 Note: `search_reddit` uses Google Serper (`site:reddit.com`), NOT the Reddit API. Only `get_reddit_post` uses Reddit OAuth credentials.
 
 **Optional tuning:**
-- `RESEARCH_MODEL` — deep research primary model (default: `x-ai/grok-4-fast`)
-- `RESEARCH_FALLBACK_MODEL` — fallback when primary fails (default: `google/gemini-2.5-flash`)
-- `LLM_EXTRACTION_MODEL` — extraction model (default: `openai/gpt-oss-120b:nitro`)
-- `API_TIMEOUT_MS` — request timeout (default: 1,800,000 / 30min)
+- `RESEARCH_MODEL` — Primary deep research model (default: `x-ai/grok-4-fast`)
+- `RESEARCH_FALLBACK_MODEL` — Fallback when primary fails (default: `google/gemini-2.5-flash`)
+- `LLM_EXTRACTION_MODEL` — Extraction model (default: `openai/gpt-oss-120b:nitro`)
+- `API_TIMEOUT_MS` — Request timeout (default: 1,800,000 / 30min)
 - `DEFAULT_REASONING_EFFORT` — `low|medium|high` (default: `high`)
-- `DEFAULT_MAX_URLS` — max search results per research question (default: 100, range: 10-200)
-- `LLM_ENABLE_REASONING` — enable reasoning in LLM extraction (default: `true`, set `false` to disable)
-- `OPENROUTER_BASE_URL` — override OpenRouter endpoint
-- `DEBUG_REDDIT` — set `true` for Reddit token cache debug logging
+- `DEFAULT_MAX_URLS` — Max search results per research question (default: 100, range: 10-200)
+- `LLM_ENABLE_REASONING` — Enable reasoning in LLM extraction (default: `true`, set `false` to disable)
+- `OPENROUTER_BASE_URL` — Override OpenRouter endpoint
+- `DEBUG_REDDIT` — Set `true` for Reddit token cache debug logging
+- `USE_CEREBRAS` — Set to `true` to use Cerebras (zai-glm-4.7) for content extraction instead of OpenRouter. Requires `CEREBRAS_API_KEY`.
+- `CEREBRAS_API_KEY` — API key for Cerebras cloud. Get one at https://cloud.cerebras.ai
 
 ## Architecture
 
@@ -73,7 +77,7 @@ src/
 │   ├── search.ts               # Google Serper API (8 concurrent calls)
 │   ├── reddit.ts               # Reddit OAuth API (5 concurrent calls, module-level token cache with 60s expiry)
 │   ├── scraper.ts              # Scrape.do with 3-mode fallback: basic → JS rendering → JS + US geo
-│   └── research.ts             # OpenRouter LLM client (tries primary model, falls back to RESEARCH_FALLBACK_MODEL)
+│   └── research.ts             # OpenRouter LLM client (tries primary model, falls back to RESEARCH_FALLBACK_MODEL; Cerebras supported via USE_CEREBRAS)
 ├── tools/
 │   ├── definitions.ts          # Tool metadata generated from YAML
 │   ├── registry.ts             # Central handler registry & execution pipeline
