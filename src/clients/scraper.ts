@@ -24,9 +24,9 @@ type ScrapeMode = typeof SCRAPE_MODES[number];
 const CREDIT_COSTS: Record<string, number> = { basic: 1, javascript: 5, javascript_geo: 5 } as const;
 const DEFAULT_SCRAPE_CONCURRENCY = 10 as const;
 const SCRAPE_BATCH_SIZE = 30 as const;
-const MAX_RETRIES = 2 as const;
+const MAX_RETRIES = 1 as const;
 /** Overall timeout for all fallback attempts on a single URL */
-const FALLBACK_OVERALL_TIMEOUT_MS = 45_000 as const;
+const FALLBACK_OVERALL_TIMEOUT_MS = 30_000 as const;
 
 // ── Interfaces ──
 
@@ -309,6 +309,20 @@ export class ScraperClient {
     // 404 is a valid response, not an error
     if (result.statusCode === 404) {
       return { done: true, response: result };
+    }
+
+    // 502 Bad Gateway — almost always a WAF/CDN block, not a transient issue.
+    // Switching render mode won't bypass CDN protection, so fail fast.
+    if (result.statusCode === 502) {
+      mcpLog('warning', `502 Bad Gateway for ${url} — likely WAF/CDN block, skipping fallback modes`, 'scraper');
+      return { done: true, response: {
+        ...result,
+        error: {
+          code: ErrorCode.SERVICE_UNAVAILABLE,
+          message: 'Bad gateway — site is blocking automated access',
+          retryable: false,
+        },
+      }};
     }
 
     // Non-retryable errors - don't try other modes
