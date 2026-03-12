@@ -29,10 +29,10 @@ const LLM_CLIENT_TIMEOUT_MS = 120_000 as const;
 const BACKOFF_JITTER_FACTOR = 0.3 as const;
 
 /** Stall detection timeout — abort if no response in this time */
-const LLM_STALL_TIMEOUT_MS = 60_000 as const;
+const LLM_STALL_TIMEOUT_MS = 15_000 as const;
 
 /** Hard request deadline for LLM calls */
-const LLM_REQUEST_DEADLINE_MS = 90_000 as const;
+const LLM_REQUEST_DEADLINE_MS = 30_000 as const;
 
 interface ProcessingConfig {
   readonly use_llm: boolean;
@@ -49,9 +49,9 @@ interface LLMResult {
 
 // LLM-specific retry configuration
 const LLM_RETRY_CONFIG = {
-  maxRetries: 3,
-  baseDelayMs: 2000,
-  maxDelayMs: 30000,
+  maxRetries: 1,
+  baseDelayMs: 1000,
+  maxDelayMs: 5000,
 } as const;
 
 // OpenRouter/OpenAI specific retryable error codes (using Set for type-safe lookup)
@@ -249,7 +249,7 @@ export async function processContentWithLLM(
           `LLM extraction (${activeModel})`,
         ),
         LLM_STALL_TIMEOUT_MS,
-        2,
+        1,
         `LLM extraction (${activeModel})`,
       );
 

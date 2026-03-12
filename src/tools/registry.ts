@@ -55,7 +55,7 @@ export type ToolRegistry = Record<string, ToolRegistration>;
 // ============================================================================
 
 const searchRedditParamsSchema = z.object({
-  queries: z.array(z.string()).min(10).max(50),
+  queries: z.array(z.string()).min(3, 'search_reddit: MINIMUM 3 queries required. Add more diverse queries covering different perspectives.').max(50),
   date_after: z.string().optional(),
 });
 
@@ -205,10 +205,10 @@ function validateToolParams(
       const issues = error.issues
         .map((i) => `- **${i.path.join('.') || 'root'}**: ${i.message}`)
         .join('\n');
-      return {
-        content: [{ type: 'text', text: `# ❌ Validation Error\n\n${issues}` }],
-        isError: true,
-      };
+      throw new McpError(
+        McpErrorCode.InvalidParams,
+        `Validation Error:\n${issues}`
+      );
     }
     const structured = classifyError(error);
     return createToolErrorFromStructured(structured);
@@ -277,10 +277,10 @@ export async function executeTool(
   }
 
   if (tool.capability && !capabilities[tool.capability]) {
-    return {
-      content: [{ type: 'text', text: getMissingEnvMessage(tool.capability) }],
-      isError: true,
-    };
+    throw new McpError(
+      McpErrorCode.InvalidRequest,
+      getMissingEnvMessage(tool.capability)
+    );
   }
 
   const validation = validateToolParams(tool, args);
