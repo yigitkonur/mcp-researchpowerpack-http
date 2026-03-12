@@ -72,6 +72,7 @@ interface EnvConfig {
   SEARCH_API_KEY: string | undefined;
   REDDIT_CLIENT_ID: string | undefined;
   REDDIT_CLIENT_SECRET: string | undefined;
+  CEREBRAS_API_KEY: string | undefined;
 }
 
 let cachedEnv: EnvConfig | null = null;
@@ -80,6 +81,7 @@ export function resetEnvCache(): void {
   cachedEnv = null;
   cachedResearch = null;
   cachedLlmExtraction = null;
+  cachedCerebras = null;
 }
 
 export function parseEnv(): EnvConfig {
@@ -89,6 +91,7 @@ export function parseEnv(): EnvConfig {
     SEARCH_API_KEY: process.env.SERPER_API_KEY || undefined,
     REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID || undefined,
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET || undefined,
+    CEREBRAS_API_KEY: process.env.CEREBRAS_API_KEY || undefined,
   };
   return cachedEnv;
 }
@@ -152,6 +155,7 @@ export interface Capabilities {
   scraping: boolean;      // SCRAPEDO_API_KEY
   deepResearch: boolean;  // OPENROUTER_API_KEY
   llmExtraction: boolean; // OPENROUTER_API_KEY (for what_to_extract in scraping)
+  cerebras: boolean;      // USE_CEREBRAS=true + CEREBRAS_API_KEY
 }
 
 export function getCapabilities(): Capabilities {
@@ -161,7 +165,8 @@ export function getCapabilities(): Capabilities {
     search: !!env.SEARCH_API_KEY,
     scraping: !!env.SCRAPER_API_KEY,
     deepResearch: !!RESEARCH.API_KEY,
-    llmExtraction: !!RESEARCH.API_KEY, // Reuses OPENROUTER for LLM extraction
+    llmExtraction: !!RESEARCH.API_KEY || CEREBRAS.ENABLED,
+    cerebras: CEREBRAS.ENABLED,
   };
 }
 
@@ -172,6 +177,7 @@ export function getMissingEnvMessage(capability: keyof Capabilities): string {
     scraping: '❌ **Web scraping unavailable.** Set `SCRAPEDO_API_KEY` to enable URL content extraction.\n\n👉 Sign up at: https://scrape.do (1,000 free credits)',
     deepResearch: '❌ **Deep research unavailable.** Set `OPENROUTER_API_KEY` to enable AI-powered research.\n\n👉 Get your API key at: https://openrouter.ai/keys',
     llmExtraction: '⚠️ **AI extraction disabled.** The `use_llm` and `what_to_extract` features require `OPENROUTER_API_KEY`.\n\nScraping will work but without intelligent content filtering.',
+    cerebras: '⚠️ **Cerebras not configured.** Set `USE_CEREBRAS=true` and `CEREBRAS_API_KEY` to use Cerebras for LLM extraction.\n\n👉 Get your API key at: https://cloud.cerebras.ai',
   };
   return messages[capability];
 }
@@ -257,5 +263,36 @@ function getLlmExtraction(): LlmExtractionConfig {
 export const LLM_EXTRACTION: LlmExtractionConfig = new Proxy({} as LlmExtractionConfig, {
   get(_target, prop: string) {
     return getLlmExtraction()[prop as keyof LlmExtractionConfig];
+  },
+});
+
+// ============================================================================
+// Cerebras Configuration (optional — overrides LLM extraction when enabled)
+// ============================================================================
+
+interface CerebrasConfig {
+  readonly ENABLED: boolean;
+  readonly API_KEY: string;
+  readonly BASE_URL: string;
+  readonly MODEL: string;
+}
+
+let cachedCerebras: CerebrasConfig | null = null;
+
+function getCerebras(): CerebrasConfig {
+  if (cachedCerebras) return cachedCerebras;
+  const env = parseEnv();
+  cachedCerebras = {
+    ENABLED: process.env.USE_CEREBRAS === 'true' && !!env.CEREBRAS_API_KEY,
+    API_KEY: env.CEREBRAS_API_KEY || '',
+    BASE_URL: 'https://api.cerebras.ai/v1',
+    MODEL: 'zai-glm-4.7',
+  };
+  return cachedCerebras;
+}
+
+export const CEREBRAS: CerebrasConfig = new Proxy({} as CerebrasConfig, {
+  get(_target, prop: string) {
+    return getCerebras()[prop as keyof CerebrasConfig];
   },
 });
