@@ -24,7 +24,9 @@ type ScrapeMode = typeof SCRAPE_MODES[number];
 const CREDIT_COSTS: Record<string, number> = { basic: 1, javascript: 5, javascript_geo: 5 } as const;
 const DEFAULT_SCRAPE_CONCURRENCY = 10 as const;
 const SCRAPE_BATCH_SIZE = 30 as const;
-const MAX_RETRIES = 3 as const;
+const MAX_RETRIES = 2 as const;
+/** Overall timeout for all fallback attempts on a single URL */
+const FALLBACK_OVERALL_TIMEOUT_MS = 45_000 as const;
 
 // ── Interfaces ──
 
@@ -86,7 +88,7 @@ export class ScraperClient {
    * NEVER throws - always returns a ScrapeResponse (possibly with error)
    */
   async scrape(request: ScrapeRequest, maxRetries = MAX_RETRIES): Promise<ScrapeResponse> {
-    const { url, mode = 'basic', timeout = 30, country } = request;
+    const { url, mode = 'basic', timeout = 15, country } = request;
     const credits = CREDIT_COSTS[mode] ?? 1;
 
     // Validate URL first
@@ -121,7 +123,7 @@ export class ScraperClient {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         // Use AbortController for timeout
-        const timeoutMs = (timeout + 10) * 1000; // Add 10s buffer over scrape timeout
+        const timeoutMs = (timeout + 5) * 1000; // Add 5s buffer over scrape timeout
         const response = await fetchWithTimeout(apiUrl, {
           method: 'GET',
           headers: { Accept: 'text/html,application/json' },
@@ -246,8 +248,15 @@ export class ScraperClient {
   async scrapeWithFallback(url: string, options: { timeout?: number } = {}): Promise<ScrapeResponse> {
     const attemptResults: string[] = [];
     let lastResult: ScrapeResponse | null = null;
+    const deadline = Date.now() + FALLBACK_OVERALL_TIMEOUT_MS;
 
     for (const attempt of FALLBACK_ATTEMPTS) {
+      // Check overall deadline before starting next fallback
+      if (Date.now() >= deadline) {
+        mcpLog('warning', `Overall fallback timeout reached for ${url} after ${attemptResults.length} attempt(s)`, 'scraper');
+        break;
+      }
+
       const result = await this.tryFallbackAttempt(url, attempt, options);
 
       if (result.done) {
@@ -262,8 +271,8 @@ export class ScraperClient {
       mcpLog('warning', `Failed with ${attempt.description} (${result.response.statusCode}), trying next fallback...`, 'scraper');
     }
 
-    // All fallbacks exhausted
-    const errorMessage = `Failed after ${FALLBACK_ATTEMPTS.length} fallback modes: ${attemptResults.join('; ')}`;
+    // All fallbacks exhausted or deadline reached
+    const errorMessage = `Failed after ${attemptResults.length} fallback attempt(s): ${attemptResults.join('; ')}`;
     return {
       content: `Error: ${errorMessage}`,
       statusCode: lastResult?.statusCode || 500,
