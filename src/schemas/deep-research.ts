@@ -216,25 +216,17 @@ const deepResearchParamsShape = {
     .min(1, { message: 'deep-research: At least 1 question is required (recommend 2-7 for optimal depth)' })
     .max(10, { message: 'deep-research: Maximum 10 questions allowed per batch' })
     .describe(
-      `**Batch deep research (2-10 questions) with dynamic token allocation.**
+      `Array of 1–10 research question objects (NOT plain strings — each item must be {question: string, file_attachments?: [...]}).
 
-**TOKEN BUDGET:** 32,000 tokens distributed across all questions:
-- 2 questions: 16,000 tokens/question (deep dive)
+**TOKEN BUDGET:** 32,000 tokens split dynamically:
+- 1 question: 32,000 tokens (exhaustive deep dive)
+- 2 questions: 16,000 tokens/question
 - 5 questions: 6,400 tokens/question (balanced)
 - 10 questions: 3,200 tokens/question (rapid multi-topic)
 
-**WHEN TO USE:**
-- Need multi-perspective analysis on related topics
-- Researching a domain from multiple angles
-- Validating understanding across different aspects
-- Comparing approaches/technologies side-by-side
+**STRUCTURE:** Each question should follow the template: WHAT I NEED → WHY I'M RESEARCHING → WHAT I ALREADY KNOW → SPECIFIC QUESTIONS (2–5). Attach local files via file_attachments for bug investigations or code-specific research.
 
-**EACH QUESTION SHOULD INCLUDE:**
-- Topic & context (what decision it informs)
-- Your current understanding (to fill gaps)
-- Specific sub-questions (2-5 per topic)
-
-**USE:** Maximize question count for comprehensive coverage. All questions run in parallel. Group related questions for coherent research.`
+**USAGE:** All questions run in parallel. More questions = broader but shallower. Group related questions for coherent research. Supply <1 and you get an error; >10 is rejected.`
     ),
 };
 

@@ -40,12 +40,12 @@ export const searchRedditParamsSchema = z.object({
       z
         .string()
         .min(1, { message: 'search-reddit: Query cannot be empty' })
-        .describe('A single Reddit-focused search query targeting one specific angle.'),
+        .describe('A single Reddit search query targeting one specific angle (e.g., "MCP server best practices", "r/ClaudeAI MCP setup guide", "MCP vs REST 2025"). Keep each query focused on one facet.'),
     )
     .min(3, { message: 'search-reddit: Minimum 3 diverse queries required' })
     .max(50, { message: 'search-reddit: Maximum 50 queries allowed' })
     .describe(
-      '3-50 diverse Reddit queries. Each query should target a different angle such as direct topic, best-of lists, comparisons, issues, subreddit targeting, or year-specific searches.',
+      'Array of 3–50 diverse Reddit search queries (minimum 3 required — fewer will error). Each query targets a different search angle: direct topic, "best of" lists, comparisons, pain points, subreddit-specific (e.g., "r/programming topic"), or year-specific. The 3-query minimum enforces research depth — this tool aggregates results across queries for consensus ranking, so single-query lookups are not supported. More queries = better signal-to-noise.',
     ),
   date_after: z
     .string()
@@ -59,19 +59,19 @@ export const getRedditPostParamsSchema = z.object({
       z
         .string()
         .url({ message: 'get-reddit-post: Each URL must be valid' })
-        .describe('A Reddit post URL returned from search-reddit or another source.'),
+        .describe('A full Reddit post URL (e.g., "https://www.reddit.com/r/subreddit/comments/id/title/"). Must be a valid URL pointing to a Reddit post. Typically sourced from search-reddit results.'),
     )
     .min(2, { message: 'get-reddit-post: Minimum 2 Reddit post URLs required' })
     .max(50, { message: 'get-reddit-post: Maximum 50 Reddit post URLs allowed' })
-    .describe('2-50 Reddit post URLs. More URLs improve consensus and breadth.'),
+    .describe('Array of 2–50 Reddit post URLs (minimum 2 required — fewer will error). This tool is built for comparative research across multiple discussions, not single-post lookups. Supply URLs from search-reddit output or any Reddit post links. Each post gets up to 20K words of threaded comments within a 100K total word budget. More URLs = broader community perspective but less depth per post.'),
   fetch_comments: z
     .boolean()
     .default(true)
-    .describe('Whether to fetch Reddit comments. Keep true unless only titles/selftext are needed.'),
+    .describe('Fetch threaded comment trees for each post. Defaults to true. Comments include author, score, OP markers, and nested replies up to the word budget. Set false only when you need post titles/selftext without community discussion.'),
   use_llm: z
     .boolean()
     .default(false)
-    .describe('Whether to run AI synthesis over fetched Reddit content. Defaults to false to preserve raw comments.'),
+    .describe('Run AI synthesis over fetched Reddit content. Defaults to false (recommended) — raw threaded comments preserve the full community voice. Only set true when you have lots of posts and individual comments don\'t matter, e.g., scanning 20+ threads for a quick consensus summary.'),
   what_to_extract: z
     .string()
     .max(1000, { message: 'get-reddit-post: what_to_extract is too long' })
@@ -617,7 +617,7 @@ export function registerSearchRedditTool(server: MCPServer): void {
       name: 'search-reddit',
       title: 'Search Reddit',
       description:
-        'Search Reddit discussions with 3-50 diverse queries and return ranked Reddit URLs for follow-up analysis.',
+        'Search Reddit for community discussions using 3–50 diverse queries and return consensus-ranked Reddit post URLs. Minimum 3 queries required — each query should target a different angle (e.g., direct topic, "best of" lists, comparisons, pain points, subreddit-specific, year-specific). More queries = better consensus detection across results. Output is a ranked URL list ready to pipe into get-reddit-post.',
       schema: searchRedditParamsSchema,
       outputSchema: searchRedditOutputSchema,
       annotations: {
@@ -648,7 +648,7 @@ export function registerGetRedditPostTool(server: MCPServer): void {
       name: 'get-reddit-post',
       title: 'Get Reddit Post',
       description:
-        'Fetch Reddit posts and comment trees from 2-50 Reddit URLs, optionally with AI extraction. Returns up to 20K words per post, 100K total.',
+        'Fetch full Reddit posts with complete comment trees from 2–50 Reddit URLs. Minimum 2 URLs required — this tool is designed for comparative research across multiple discussions, not single-post lookups. Each post gets up to 20K words of comment depth (100K total budget). Comments are threaded with author, score, and OP markers. Best used after search-reddit to deep-dive into the top-ranked URLs. Keep use_llm=false (default) to get raw threaded comments — only flip to true when you have lots of posts and individual comments don\'t matter.',
       schema: getRedditPostParamsSchema,
       outputSchema: getRedditPostOutputSchema,
       annotations: {

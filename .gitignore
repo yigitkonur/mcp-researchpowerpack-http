@@ -53,13 +53,39 @@ test-logs/
 .npm/
 .eslintcache
 .mcp-use/
+!.mcp-use/project.json
 
 # ============================================
-# Agent workspaces (runtime artifacts)
+# Agent workspaces and skill-dl artifacts
 # ============================================
 .super-agents/
 .agent-workspace/
+.agents/
+.augment/
+.codebuddy/
+.commandcode/
+.continue/
+.crush/
+.factory/
+.goose/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
 .windsurf/
+.zencoder/
+skills/
+skills-lock.json
 
 # ============================================
 # Syncthing conflict files
@@ -71,6 +97,11 @@ test-logs/
 # ============================================
 .mcp.json
 mcp_servers.json
+
+# ============================================
+# Superpowers design specs (local only)
+# ============================================
+docs/superpowers/
 
 # ============================================
 # Misc runtime artifacts

@@ -242,7 +242,7 @@ export function registerWebSearchTool(server: MCPServer): void {
       name: 'web-search',
       title: 'Web Search',
       description:
-        'Run parallel Google searches across 1-100 keywords and return ranked URLs for follow-up scraping.',
+        'Run parallel Google searches across 1–100 keywords and return CTR-weighted, consensus-ranked URLs for follow-up scraping. This is a bulk discovery tool — supply 3–7 keywords for solid consensus detection, or up to 100 for exhaustive coverage. Each keyword runs as a separate Google search; results are aggregated, scored by search position, and URLs appearing across multiple queries are flagged as high-confidence. Output is a ranked URL list ready to pipe into scrape-links or get-reddit-post.',
       schema: webSearchParamsSchema,
       outputSchema: webSearchOutputSchema,
       annotations: {
