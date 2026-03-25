@@ -9,7 +9,7 @@ const keywordSchema = z
     k => k.trim().length > 0,
     { message: 'web-search: Keyword cannot be whitespace only' }
   )
-  .describe('A single web search keyword or query phrase covering one angle of the topic.');
+  .describe('A single Google search query (1–500 chars). Each keyword runs as a separate parallel search. Use varied angles: direct topic, comparisons, "best of" lists, year-specific, site-specific (e.g., "site:github.com topic").');
 
 // Input schema for web-search tool
 const keywordsSchema = z
@@ -18,7 +18,7 @@ const keywordsSchema = z
   })
   .min(1, { message: 'web-search: At least 1 keyword required' })
   .max(100, { message: 'web-search: Maximum 100 keywords allowed per request' })
-  .describe('Array of search keywords (1-100, RECOMMENDED 3-7 for consensus ranking). Each keyword runs as a separate Google search in parallel. More keywords = better consensus detection across results.');
+  .describe('Array of 1–100 search keywords. RECOMMENDED: 3–7 for solid consensus ranking, up to 20 for thorough coverage. Each keyword runs as a separate Google search in parallel. Results are aggregated and URLs appearing in multiple searches are flagged as high-confidence consensus matches. Supply <1 and you get an error; >100 is rejected.');
 
 const webSearchParamsShape = {
   keywords: keywordsSchema,

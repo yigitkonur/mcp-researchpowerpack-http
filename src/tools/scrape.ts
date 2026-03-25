@@ -369,7 +369,7 @@ export function registerScrapeLinksTool(server: MCPServer): void {
       name: 'scrape-links',
       title: 'Scrape Links',
       description:
-        'Scrape 1-50 URLs over HTTP, clean the content, and optionally run AI extraction over the page text.',
+        'Scrape 1–50 web pages over HTTP, clean HTML to markdown, and optionally run AI extraction to pull exactly what you need. Token budget (32K) is split across URLs: 3 URLs get ~10K tokens each (deep), 10 get ~3K (balanced), 50 get ~640 (scan). AI extraction is on by default — set use_llm=false only for raw content debugging. Use what_to_extract to target specific data (e.g., "pricing tiers | feature comparison | API limits").',
       schema: scrapeLinksParamsSchema,
       outputSchema: scrapeLinksOutputSchema,
       annotations: {

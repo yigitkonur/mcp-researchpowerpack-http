@@ -292,7 +292,7 @@ export function registerDeepResearchTool(server: MCPServer): void {
       name: 'deep-research',
       title: 'Deep Research',
       description:
-        'Run 1-10 parallel deep research questions with optional file attachments and source-grounded synthesis.',
+        'Run 1–10 deep research questions in parallel with web search, source synthesis, and optional file attachments. Each question must be an object {question: string, file_attachments?: [...]} — not a plain string. Token budget (32K) is split across questions: 1 question gets 32K tokens (exhaustive), 5 get ~6.4K each (balanced), 10 get ~3.2K each (rapid scan). Questions should follow the structured template (WHAT I NEED / WHY / WHAT I KNOW / SPECIFIC QUESTIONS). Attach local files for bug investigations or code-specific research.',
       schema: deepResearchParamsSchema,
       outputSchema: deepResearchOutputSchema,
       annotations: {
