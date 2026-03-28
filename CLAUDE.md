@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-MCP Research Powerpack HTTP — an HTTP-first MCP server built on `mcp-use` that exposes 5 research tools: `web-search`, `search-reddit`, `get-reddit-post`, `scrape-links`, and `deep-research`. ES module TypeScript codebase, published to npm.
+MCP Research Powerpack HTTP — an HTTP-first MCP server built on `mcp-use` that exposes 6 research tools: `web-search`, `search-reddit`, `get-reddit-post`, `scrape-links`, `deep-research`, and `github-score`. ES module TypeScript codebase, published to npm.
 
 ## Commands
 
@@ -27,17 +27,20 @@ Single test file: `tsx tests/http-server.ts`. No unit test framework — the tes
 index.ts                     Entry point: server startup, CORS, health, graceful shutdown
 src/
   config/index.ts            Central config: env parsing, capability detection, constants
-  clients/                   Provider API clients (search, reddit, scraper, research)
+  clients/                   Provider API clients (search, reddit, scraper, research, github)
   tools/
-    registry.ts              registerAllTools() — wires all 5 tools to the MCP server
+    registry.ts              registerAllTools() — wires all 6 tools to the MCP server
     search.ts, reddit.ts,    Individual tool handlers
-    scrape.ts, research.ts
+    scrape.ts, research.ts,
+    github-score.ts
     mcp-helpers.ts           MCP response builders (markdown(), error(), toolFailure())
     utils.ts                 Shared formatters, token budget allocation
   services/
     llm-processor.ts         AI extraction/synthesis via OpenRouter (or Cerebras)
     file-attachment.ts       Reads local files for deep-research context
     markdown-cleaner.ts      HTML/markdown cleanup
+  scoring/
+    github-quality.ts        Pure scoring functions for the "Gives a Damn" repo quality algorithm
   schemas/                   Zod input validation schemas per tool
   utils/
     errors.ts                Structured error codes with retryable classification
@@ -53,7 +56,7 @@ src/
 
 - **Capability detection**: `src/config/index.ts` evaluates which API keys are present at startup. Missing keys disable tools gracefully (helpful error, no crash).
 - **Lazy config via Proxy**: `RESEARCH` and `LLM_EXTRACTION` config objects use `Proxy` for deferred env reads, allowing runtime changes without restart.
-- **Bounded concurrency**: All parallel work uses `pMap`/`pMapSettled` from `src/utils/concurrency.ts` with explicit limits (scraper: 30, reddit: 10, research: 3, files: 5).
+- **Bounded concurrency**: All parallel work uses `pMap`/`pMapSettled` from `src/utils/concurrency.ts` with explicit limits (scraper: 30, reddit: 10, research: 3, files: 5, github: 5).
 - **Token budgeting**: Deep research and scraper allocate a fixed token budget (32K) divided dynamically across items.
 - **CTR-based URL ranking**: `web-search` aggregates results across keyword queries, scores URLs by search position weights, and marks consensus URLs (appearing in 5+ searches).
 - **Tools never throw**: Every tool handler wraps in try-catch, returning `toolFailure(errorMessage)` on any error. The MCP server process never crashes from tool execution.
@@ -68,6 +71,7 @@ src/
 | `get-reddit-post` | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` |
 | `scrape-links` | `SCRAPEDO_API_KEY` |
 | `deep-research`, LLM extraction | `OPENROUTER_API_KEY` |
+| `github-score` | `GITHUB_TOKEN` |
 
 ## TypeScript conventions
 
