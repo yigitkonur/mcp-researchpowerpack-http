@@ -268,7 +268,6 @@ function buildScrapeResponse(
     data: contents.join('\n\n---\n\n'),
     nextSteps: [
       metrics.successful > 0 ? 'web-search or search-reddit to cross-check claims from scraped content' : null,
-      metrics.successful > 0 ? 'deep-research to synthesize findings across scraped sources' : null,
       metrics.failed > 0 ? 'Retry failed URLs with timeout=60' : null,
     ].filter(Boolean) as string[],
     metadata: {
@@ -319,7 +318,6 @@ export async function handleScrapeLinks(
     return createScrapeErrorResponse('CLIENT_INIT_FAILED', `Failed to initialize scraper: ${err.message}`, startTime, params.urls.length, false, [
       'web-search(keywords=["topic key findings", "topic summary", "topic overview"]) — search for information instead of scraping',
       'search-reddit(queries=["topic discussion", "topic recommendations"]) — get community insights as an alternative',
-      'deep-research(questions=[{question: "Summarize the key information from [topic/URLs]"}]) — use AI research to gather equivalent information',
     ]);
   }
 

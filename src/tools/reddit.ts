@@ -267,7 +267,6 @@ function formatNoSearchResults(queryCount: number): string {
     alternatives: [
       'web-search(keywords=["topic best practices", "topic guide", "topic recommendations 2025"]) — get results from the broader web instead',
       'scrape-links(urls=[...any URLs you already have...], use_llm=true) — if you have URLs from earlier searches, scrape them now',
-      'deep-research(questions=[{question: "What are the key findings about [topic]?"}]) — synthesize from AI research',
     ],
   });
 }
@@ -282,7 +281,6 @@ function formatSearchRedditError(error: unknown): string {
     howToFix: ['Verify SERPER_API_KEY is set correctly'],
     alternatives: [
       'web-search(keywords=["topic recommendations", "topic best practices", "topic vs alternatives"]) — uses the same API key, but try anyway as it may work for general search',
-      'deep-research(questions=[{question: "What does the community recommend for [topic]?"}]) — uses a different API (OpenRouter), not affected by this error',
       'scrape-links(urls=[...any URLs you already have...], use_llm=true) — if you have URLs from prior steps, scrape them now',
     ],
   });
@@ -537,7 +535,6 @@ function formatGetRedditPostsError(error: unknown): string {
     alternatives: [
       'web-search(keywords=["topic reddit discussion", "topic reddit recommendations"]) — search for Reddit content via web search instead',
       'scrape-links(urls=[...the Reddit URLs...], use_llm=true, what_to_extract="Extract post content | top comments | recommendations") — scrape Reddit pages directly as a fallback',
-      'deep-research(questions=[{question: "What are community opinions on [topic]?"}]) — get AI-synthesized community perspective',
     ],
   });
 }

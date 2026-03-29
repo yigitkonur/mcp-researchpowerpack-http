@@ -77,15 +77,18 @@ interface EnvConfig {
   REDDIT_CLIENT_ID: string | undefined;
   REDDIT_CLIENT_SECRET: string | undefined;
   CEREBRAS_API_KEY: string | undefined;
+  GITHUB_TOKEN: string | undefined;
 }
 
 let cachedEnv: EnvConfig | null = null;
+let cachedHasGhCli: boolean | null = null;
 
 export function resetEnvCache(): void {
   cachedEnv = null;
   cachedResearch = null;
   cachedLlmExtraction = null;
   cachedCerebras = null;
+  cachedHasGhCli = null;
 }
 
 export function parseEnv(): EnvConfig {
@@ -96,6 +99,7 @@ export function parseEnv(): EnvConfig {
     REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID || undefined,
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET || undefined,
     CEREBRAS_API_KEY: process.env.CEREBRAS_API_KEY || undefined,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN || undefined,
   };
   return cachedEnv;
 }
@@ -157,9 +161,21 @@ export interface Capabilities {
   reddit: boolean;        // REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET
   search: boolean;        // SERPER_API_KEY
   scraping: boolean;      // SCRAPEDO_API_KEY
-  deepResearch: boolean;  // OPENROUTER_API_KEY
   llmExtraction: boolean; // OPENROUTER_API_KEY (for what_to_extract in scraping)
   cerebras: boolean;      // USE_CEREBRAS=true + CEREBRAS_API_KEY
+  github: boolean;        // GITHUB_TOKEN
+}
+
+function hasGhCli(): boolean {
+  if (cachedHasGhCli !== null) return cachedHasGhCli;
+  try {
+    const { execSync } = require('node:child_process') as typeof import('node:child_process');
+    const token = execSync('gh auth token', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf-8' }).trim();
+    cachedHasGhCli = token.length > 0;
+  } catch {
+    cachedHasGhCli = false;
+  }
+  return cachedHasGhCli;
 }
 
 export function getCapabilities(): Capabilities {
@@ -168,9 +184,9 @@ export function getCapabilities(): Capabilities {
     reddit: !!(env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET),
     search: !!env.SEARCH_API_KEY,
     scraping: !!env.SCRAPER_API_KEY,
-    deepResearch: !!RESEARCH.API_KEY,
     llmExtraction: !!RESEARCH.API_KEY || CEREBRAS.ENABLED,
     cerebras: CEREBRAS.ENABLED,
+    github: !!env.GITHUB_TOKEN || hasGhCli(),
   };
 }
 
@@ -179,12 +195,28 @@ export function getMissingEnvMessage(capability: keyof Capabilities): string {
     reddit: '❌ **Reddit tools unavailable.** Set `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` to enable `get-reddit-post`.\n\n👉 Create a Reddit app at: https://www.reddit.com/prefs/apps (select "script" type)',
     search: '❌ **Search unavailable.** Set `SERPER_API_KEY` to enable `web-search` and `search-reddit`.\n\n👉 Get your free API key at: https://serper.dev (2,500 free queries)',
     scraping: '❌ **Web scraping unavailable.** Set `SCRAPEDO_API_KEY` to enable `scrape-links`.\n\n👉 Sign up at: https://scrape.do (1,000 free credits)',
-    deepResearch: '❌ **Deep research unavailable.** Set `OPENROUTER_API_KEY` to enable `deep-research`.\n\n👉 Get your API key at: https://openrouter.ai/keys',
     llmExtraction: '⚠️ **AI extraction disabled.** The `use_llm` and `what_to_extract` features for `scrape-links` require `OPENROUTER_API_KEY`.\n\nScraping will work but without intelligent content filtering.',
     cerebras: '⚠️ **Cerebras not configured.** Set `USE_CEREBRAS=true` and `CEREBRAS_API_KEY` to use Cerebras for LLM extraction.\n\n👉 Get your API key at: https://cloud.cerebras.ai',
+    github: '❌ **GitHub Score unavailable.** Set `GITHUB_TOKEN` or run `gh auth login` to enable `github-score`.\n\n👉 Option 1: `gh auth login` (uses your existing GitHub CLI session)\n👉 Option 2: Create a personal access token at: https://github.com/settings/tokens (no special scopes needed for public repos)',
   };
   return messages[capability];
 }
+
+// ============================================================================
+// GitHub Configuration
+// ============================================================================
+
+export const GITHUB = {
+  MAX_CONCURRENT_REPOS: 5,
+  MAX_RESULTS: 50,
+  DEFAULT_RESULTS: 20,
+  RETRY_COUNT: 3,
+  TIMEOUT_MS: 15_000,
+  PARTICIPATION_RETRY_DELAY_MS: 1_500,
+  PARTICIPATION_MAX_RETRIES: 3,
+  GRAPHQL_URL: 'https://api.github.com/graphql',
+  REST_BASE_URL: 'https://api.github.com',
+} as const;
 
 // ============================================================================
 // Scraper Configuration (Scrape.do implementation)
@@ -205,10 +237,6 @@ export const SCRAPER = {
 // ============================================================================
 // Research Compression Prefix/Suffix
 // ============================================================================
-
-export const RESEARCH_PROMPTS = {
-  SUFFIX: `CONSTRAINTS: No restating the question. Cite sources inline [source]. NEVER hallucinate — only report what sources confirm.`,
-} as const;
 
 // ============================================================================
 // Reddit Configuration
