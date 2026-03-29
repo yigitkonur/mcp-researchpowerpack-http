@@ -186,7 +186,6 @@ function buildWebSearchError(
     howToFix: ['Verify SERPER_API_KEY is set correctly'],
     alternatives: [
       'search-reddit(queries=["topic recommendations", "topic best practices", "topic vs alternatives"]) — Reddit search uses the same API but may work; also provides community perspective',
-      'deep-research(questions=[{question: "What are the key findings, best practices, and recommendations for [topic]?"}]) — uses OpenRouter API (different key), not affected by this error',
       'scrape-links(urls=[...any URLs you already have...], use_llm=true) — if you have URLs from prior steps, scrape them now instead of searching',
     ],
   });

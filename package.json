@@ -1,7 +1,7 @@
 {
   "name": "mcp-researchpowerpack-http",
   "version": "3.10.0",
-  "description": "The ultimate research MCP toolkit: Reddit mining, web search with CTR aggregation, AI-powered deep research, and intelligent web scraping - all in one modular package",
+  "description": "The ultimate research MCP toolkit: Reddit mining, web search with CTR aggregation, GitHub repo scoring, and intelligent web scraping - all in one modular package",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -9,7 +9,8 @@
     "mcp-research-powerpack-http": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/tests"
   ],
   "scripts": {
     "build": "mcp-use build",
@@ -20,7 +21,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:http",
     "test:http": "tsx tests/http-server.ts",
-    "prepublishOnly": "pnpm build && pnpm typecheck && pnpm test:http"
+    "prepublishOnly": "pnpm build && pnpm typecheck"
   },
   "keywords": [
     "mcp",
@@ -30,7 +31,7 @@
     "search",
     "ai",
     "model-context-protocol",
-    "deep-research",
+    "github-score",
     "web-scraping",
     "claude",
     "anthropic",
@@ -65,5 +66,8 @@
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

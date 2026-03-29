@@ -1,166 +1,123 @@
-# MCP Research Powerpack HTTP
+# mcp-researchpowerpack
 
-HTTP-first MCP server for research workflows: web search, Reddit discovery, Reddit post mining, web scraping, and deep research. The server is built on `mcp-use`, served over `/mcp`, and intended for remote MCP clients and hosted deployment.
+http mcp server for research. web search, reddit mining, scraping, github scoring — all over `/mcp`.
 
-## Tools
+built on [mcp-use](https://github.com/nicepkg/mcp-use). no stdio, http only.
 
-| Tool | Purpose | Requires |
-| --- | --- | --- |
-| `web-search` | Parallel Google search across 3-100 keywords with ranked URLs | `SERPER_API_KEY` |
-| `search-reddit` | Reddit-focused search across 3-50 diverse queries | `SERPER_API_KEY` |
-| `get-reddit-post` | Fetch Reddit posts and comment trees from 2-50 Reddit URLs | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` |
-| `scrape-links` | Scrape 1-50 URLs with optional AI extraction | `SCRAPEDO_API_KEY` |
-| `deep-research` | Run multi-question deep research with optional file attachments | `OPENROUTER_API_KEY` |
+## tools
 
-The server also exposes:
+| tool | what it does | needs |
+|------|-------------|-------|
+| `web-search` | parallel google search across 3–100 keywords, ctr-weighted url ranking | `SERPER_API_KEY` |
+| `search-reddit` | reddit-focused search, 3–50 diverse queries | `SERPER_API_KEY` |
+| `get-reddit-post` | fetch reddit posts + full comment trees, 2–50 urls | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` |
+| `scrape-links` | scrape 1–50 urls with optional ai extraction | `SCRAPEDO_API_KEY` |
+| `github-score` | evaluate github repo quality with multi-signal scoring | `GITHUB_TOKEN` |
 
-- `/health` for load balancers and deploy checks
-- `health://status` as an MCP resource
+also exposes `/health` and `health://status` mcp resource.
 
-## Quick Start
-
-### Run locally from npm
+## quickstart
 
 ```bash
+# from npm
 HOST=127.0.0.1 PORT=3000 npx -y mcp-researchpowerpack-http
-```
 
-The MCP endpoint is available at:
-
-```text
-http://localhost:3000/mcp
-```
-
-### Run from source
-
-```bash
+# from source
 git clone https://github.com/yigitkonur/mcp-researchpowerpack-http.git
 cd mcp-researchpowerpack-http
-pnpm install
-pnpm dev
+pnpm install && pnpm dev
 ```
 
-### Connect a client
-
-This server is HTTP-only. Start it first, then point your MCP client at the URL.
-
-Claude Desktop / Claude Code / Cursor-style config:
+connect your client to `http://localhost:3000/mcp`:
 
 ```json
 {
   "mcpServers": {
-    "research-powerpack-http": {
+    "research-powerpack": {
       "url": "http://localhost:3000/mcp"
     }
   }
 }
 ```
 
-## Configuration
+## config
 
-Copy `.env.example` and set only the keys you need. Missing provider keys do not crash the server; they disable the corresponding tools with graceful MCP errors.
+copy `.env.example`, set only what you need. missing keys don't crash — they disable the tool with a clear error.
 
-### Server settings
+### server
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `3000` | HTTP port |
-| `HOST` | `127.0.0.1` | Bind host for local development |
-| `MCP_URL` | unset | Public base URL override |
-| `ALLOWED_ORIGINS` | unset | Comma-separated allowed origins / host validation list |
-| `REDIS_URL` | unset | Enables Redis-backed sessions and distributed SSE streams |
+| var | default | |
+|-----|---------|---|
+| `PORT` | `3000` | http port |
+| `HOST` | `127.0.0.1` | bind address |
+| `ALLOWED_ORIGINS` | unset | comma-separated origins for host validation |
+| `REDIS_URL` | unset | redis-backed sessions + distributed sse |
 
-Hosted deployments can boot without `ALLOWED_ORIGINS`, but production host validation stays disabled until you set it. For Manufact Cloud, the practical flow is: deploy once to get the assigned URL, then set `ALLOWED_ORIGINS` to that URL or to your custom domain and redeploy.
+### providers
 
-### Provider settings
+| var | enables |
+|-----|---------|
+| `SERPER_API_KEY` | web-search, search-reddit |
+| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | get-reddit-post |
+| `SCRAPEDO_API_KEY` | scrape-links |
+| `OPENROUTER_API_KEY` | ai extraction (scrape-links) |
 
-| Variable | Enables |
-| --- | --- |
-| `SERPER_API_KEY` | `web-search`, `search-reddit` |
-| `REDDIT_CLIENT_ID` | `get-reddit-post` |
-| `REDDIT_CLIENT_SECRET` | `get-reddit-post` |
-| `SCRAPEDO_API_KEY` | `scrape-links` |
-| `OPENROUTER_API_KEY` | `deep-research`, AI extraction |
-| `OPENROUTER_BASE_URL` | Alternate OpenRouter-compatible endpoint |
-| `RESEARCH_MODEL` | Primary deep research model |
-| `RESEARCH_FALLBACK_MODEL` | Deep research fallback model |
-| `LLM_EXTRACTION_MODEL` | Model for scrape/reddit extraction |
-| `DEFAULT_REASONING_EFFORT` | `low`, `medium`, or `high` |
-| `DEFAULT_MAX_URLS` | Max URLs per research question |
-| `API_TIMEOUT_MS` | Provider request timeout |
-| `USE_CEREBRAS` | Use Cerebras for extraction when enabled |
-| `CEREBRAS_API_KEY` | Cerebras API key |
+optional tuning: `LLM_EXTRACTION_MODEL`, `API_TIMEOUT_MS`.
 
-## Development
+## dev
 
 ```bash
 pnpm install
-pnpm dev
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm start
-pnpm inspect
+pnpm dev          # watch mode, serves :3000/mcp
+pnpm typecheck    # tsc --noEmit
+pnpm test         # http integration test
+pnpm build        # compile to dist/
+pnpm inspect      # mcp-use inspector
 ```
 
-`pnpm inspect` launches the standalone mcp-use inspector against `http://localhost:3000/mcp`.
-
-## Deploy
-
-### Manufact Cloud
-
-```bash
-pnpm install
-pnpm build
-pnpm deploy
-```
-
-After deploy, use the returned hosted URL:
-
-```json
-{
-  "mcpServers": {
-    "research-powerpack-http": {
-      "url": "https://<deployment>.deploy.mcp-use.com/mcp"
-    }
-  }
-}
-```
-
-Set one of the following in the hosted environment before starting the server:
-
-- First deploy without `ALLOWED_ORIGINS` if the public URL is not known yet.
-- After Manufact assigns the deployment URL, set:
-  - `MCP_URL=https://<deployment>.deploy.mcp-use.com`
-  - `ALLOWED_ORIGINS=https://<deployment>.deploy.mcp-use.com`
-
-### Generic self-hosting
-
-Run the server anywhere Node 20.19+ or 22.12+ is available:
+## deploy
 
 ```bash
 pnpm build
-HOST=0.0.0.0 ALLOWED_ORIGINS=https://app.example.com PORT=3000 pnpm start
+pnpm deploy       # manufact cloud
 ```
 
-Health check:
+or self-host anywhere with node 20.19+ / 22.12+:
 
 ```bash
-curl http://localhost:3000/health
+HOST=0.0.0.0 ALLOWED_ORIGINS=https://app.example.com pnpm start
 ```
 
-## Breaking Changes In This Version
+## architecture
 
-- The package is now HTTP-only. stdio transport was removed.
-- Clients must connect by URL instead of spawning the package as a local command.
-- Tool IDs are now kebab-case:
-  - `web-search`
-  - `search-reddit`
-  - `get-reddit-post`
-  - `scrape-links`
-  - `deep-research`
-- Cloudflare Workers support and Wrangler config were removed.
+```
+index.ts                 server startup, cors, health, shutdown
+src/
+  config/                env parsing, capability detection, lazy proxy config
+  clients/               provider api clients (serper, reddit, scrapedo, openrouter)
+  tools/
+    registry.ts          registerAllTools() — wires tools to mcp server
+    search.ts            web-search handler
+    reddit.ts            search-reddit + get-reddit-post
+    scrape.ts            scrape-links handler
+    github-score.ts      github-score handler
+    mcp-helpers.ts       response builders (markdown, error, toolFailure)
+    utils.ts             shared formatters, token budget allocation
+  services/
+    llm-processor.ts     ai extraction/synthesis via openrouter
+    markdown-cleaner.ts  html/markdown cleanup
+  schemas/               zod v4 input validation per tool
+  utils/
+    errors.ts            structured error codes (retryable classification)
+    concurrency.ts       pMap/pMapSettled — bounded parallel execution
+    retry.ts             exponential backoff with jitter
+    url-aggregator.ts    ctr-weighted url ranking for search consensus
+    response.ts          formatSuccess/formatError/formatBatchHeader
+    logger.ts            mcpLog() — stderr-only (mcp-safe)
+```
 
-## License
+key patterns: capability detection at startup, lazy config via proxy, bounded concurrency (scraper:30, reddit:10, github:5), 32k token budgets, ctr-based url ranking, tools never throw (always return toolFailure), structured errors with retry classification.
 
-MIT
+## license
+
+mit
