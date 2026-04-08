@@ -9,7 +9,6 @@ const TOOL_NAMES = [
   'search-reddit',
   'get-reddit-post',
   'scrape-links',
-  'github-score',
 ] as const;
 
 type ServerProcess = ReturnType<typeof spawn>;

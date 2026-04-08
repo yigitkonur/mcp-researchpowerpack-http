@@ -1,6 +1,6 @@
 # mcp-researchpowerpack
 
-http mcp server for research. web search, reddit mining, scraping, github scoring — all over `/mcp`.
+http mcp server for research. web search, reddit mining, and scraping — all over `/mcp`.
 
 built on [mcp-use](https://github.com/nicepkg/mcp-use). no stdio, http only.
 
@@ -12,7 +12,6 @@ built on [mcp-use](https://github.com/nicepkg/mcp-use). no stdio, http only.
 | `search-reddit` | reddit-focused search, 3–50 diverse queries | `SERPER_API_KEY` |
 | `get-reddit-post` | fetch reddit posts + full comment trees, 2–50 urls | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` |
 | `scrape-links` | scrape 1–50 urls with optional ai extraction | `SCRAPEDO_API_KEY` |
-| `github-score` | evaluate github repo quality with multi-signal scoring | `GITHUB_TOKEN` |
 
 also exposes `/health` and `health://status` mcp resource.
 
@@ -100,7 +99,6 @@ src/
     search.ts            web-search handler
     reddit.ts            search-reddit + get-reddit-post
     scrape.ts            scrape-links handler
-    github-score.ts      github-score handler
     mcp-helpers.ts       response builders (markdown, error, toolFailure)
     utils.ts             shared formatters, token budget allocation
   services/

@@ -5,19 +5,18 @@
  */
 
 import OpenAI from 'openai';
-import { RESEARCH, LLM_EXTRACTION, CEREBRAS, getCapabilities } from '../config/index.js';
+import { LLM_EXTRACTION, getCapabilities } from '../config/index.js';
 import {
   classifyError,
   sleep,
   ErrorCode,
-  withRequestTimeout,
   withStallProtection,
   type StructuredError,
 } from '../utils/errors.js';
 import { mcpLog } from '../utils/logger.js';
 
 /** Default concurrency for parallel LLM extractions */
-export const DEFAULT_LLM_CONCURRENCY = 3 as const;
+export const DEFAULT_LLM_CONCURRENCY = 99 as const;
 
 /** Maximum input characters for LLM processing (~25k tokens) */
 const MAX_LLM_INPUT_CHARS = 100_000 as const;
@@ -73,33 +72,19 @@ function hasStatus(error: unknown): error is { status: number } {
 }
 
 let llmClient: OpenAI | null = null;
-let cerebrasClient: OpenAI | null = null;
 
 export function createLLMProcessor(): OpenAI | null {
   if (!getCapabilities().llmExtraction) return null;
 
-  // Cerebras takes priority when enabled
-  if (CEREBRAS.ENABLED) {
-    if (!cerebrasClient) {
-      cerebrasClient = new OpenAI({
-        baseURL: CEREBRAS.BASE_URL,
-        apiKey: CEREBRAS.API_KEY,
-        timeout: LLM_CLIENT_TIMEOUT_MS,
-        maxRetries: 0,
-      });
-      mcpLog('info', `LLM extraction using Cerebras (${CEREBRAS.MODEL})`, 'llm');
-    }
-    return cerebrasClient;
-  }
-
-  // Default: OpenRouter
   if (!llmClient) {
     llmClient = new OpenAI({
-      baseURL: RESEARCH.BASE_URL,
-      apiKey: RESEARCH.API_KEY,
+      baseURL: LLM_EXTRACTION.BASE_URL,
+      apiKey: LLM_EXTRACTION.API_KEY,
       timeout: LLM_CLIENT_TIMEOUT_MS,
       maxRetries: 0,
+      defaultHeaders: { 'X-Title': 'mcp-research-powerpack' },
     });
+    mcpLog('info', `LLM extraction configured (model: ${LLM_EXTRACTION.MODEL}, baseURL: ${LLM_EXTRACTION.BASE_URL})`, 'llm');
   }
   return llmClient;
 }
@@ -184,7 +169,7 @@ export async function processContentWithLLM(
     return {
       content,
       processed: false,
-      error: 'LLM processor not available (OPENROUTER_API_KEY not set)',
+      error: 'LLM processor not available (LLM_EXTRACTION_API_KEY or OPENROUTER_API_KEY not set)',
       errorDetails: {
         code: ErrorCode.AUTH_ERROR,
         message: 'LLM processor not available',
@@ -206,8 +191,7 @@ export async function processContentWithLLM(
     ? `Extract and clean the following content. Focus on: ${config.what_to_extract}\n\nContent:\n${truncatedContent}`
     : `Clean and extract the main content from the following text, removing navigation, ads, and irrelevant elements:\n\n${truncatedContent}`;
 
-  // Select model based on Cerebras availability
-  const activeModel = CEREBRAS.ENABLED ? CEREBRAS.MODEL : LLM_EXTRACTION.MODEL;
+  const activeModel = LLM_EXTRACTION.MODEL;
 
   // Build request body
   const requestBody: Record<string, unknown> = {
@@ -216,8 +200,7 @@ export async function processContentWithLLM(
     max_tokens: config.max_tokens || LLM_EXTRACTION.MAX_TOKENS,
   };
 
-  // Cerebras doesn't support reasoning parameter
-  if (!CEREBRAS.ENABLED && LLM_EXTRACTION.ENABLE_REASONING) {
+  if (LLM_EXTRACTION.ENABLE_REASONING) {
     requestBody.reasoning = { enabled: true };
   }
 
@@ -227,32 +210,18 @@ export async function processContentWithLLM(
   for (let attempt = 0; attempt <= LLM_RETRY_CONFIG.maxRetries; attempt++) {
     try {
       if (attempt === 0) {
-        mcpLog('info', `Starting extraction with ${activeModel}${CEREBRAS.ENABLED ? ' (Cerebras)' : ''}`, 'llm');
+        mcpLog('info', `Starting extraction with ${activeModel}`, 'llm');
       } else {
         mcpLog('warning', `Retry attempt ${attempt}/${LLM_RETRY_CONFIG.maxRetries}`, 'llm');
       }
 
       const response = await withStallProtection(
-        (stallSignal) => withRequestTimeout(
-          (timeoutSignal) => {
-            // Merge external signal, stall signal, and timeout signal
-            const mergedController = new AbortController();
-            const abortMerged = () => mergedController.abort();
-            signal?.addEventListener('abort', abortMerged, { once: true });
-            stallSignal.addEventListener('abort', abortMerged, { once: true });
-            timeoutSignal.addEventListener('abort', abortMerged, { once: true });
-
-            return processor.chat.completions.create(
-              requestBody as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
-              { signal: mergedController.signal }
-            ).finally(() => {
-              signal?.removeEventListener('abort', abortMerged);
-              stallSignal.removeEventListener('abort', abortMerged);
-              timeoutSignal.removeEventListener('abort', abortMerged);
-            });
+        (stallSignal) => processor.chat.completions.create(
+          requestBody as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+          {
+            signal: signal ? AbortSignal.any([stallSignal, signal]) : stallSignal,
+            timeout: LLM_REQUEST_DEADLINE_MS,
           },
-          LLM_REQUEST_DEADLINE_MS,
-          `LLM extraction (${activeModel})`,
         ),
         LLM_STALL_TIMEOUT_MS,
         3,
