@@ -1,7 +1,7 @@
 {
   "name": "mcp-researchpowerpack-http",
   "version": "3.10.1",
-  "description": "The ultimate research MCP toolkit: Reddit mining, web search with CTR aggregation, GitHub repo scoring, and intelligent web scraping - all in one modular package",
+  "description": "The ultimate research MCP toolkit: Reddit mining, web search with CTR aggregation, and intelligent web scraping - all in one modular package",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -31,7 +31,6 @@
     "search",
     "ai",
     "model-context-protocol",
-    "github-score",
     "web-scraping",
     "claude",
     "anthropic",
