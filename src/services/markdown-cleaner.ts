@@ -1,7 +1,10 @@
 /**
  * Markdown cleaner service using Turndown for HTML to Markdown conversion
  */
+import { Logger } from 'mcp-use';
 import TurndownService from 'turndown';
+
+const logger = Logger.get('markdown-cleaner');
 
 const turndown = new TurndownService({
   headingStyle: 'atx',
@@ -71,11 +74,8 @@ export class MarkdownCleaner {
       return content;
     } catch (error) {
       // Log error but don't crash - return original content for graceful degradation
-      console.error(
-        '[MarkdownCleaner] processContent failed:',
-        error instanceof Error ? error.message : String(error),
-        '| Content length:',
-        htmlContent?.length ?? 0
+      logger.warn(
+        `processContent failed: ${error instanceof Error ? error.message : String(error)} | Content length: ${htmlContent?.length ?? 0}`,
       );
       // Return original content if conversion fails
       return htmlContent || '';
