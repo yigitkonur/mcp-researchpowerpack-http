@@ -4,6 +4,8 @@
  * Implements robust error handling that NEVER crashes
  */
 
+import { Logger } from 'mcp-use';
+
 import { REDDIT, CONCURRENCY } from '../config/index.js';
 import { USER_AGENT_VERSION } from '../version.js';
 import { calculateBackoff } from '../utils/retry.js';
@@ -113,6 +115,7 @@ let cachedTokenExpiry = 0;
 
 // Token cache logging only when DEBUG env is set
 const DEBUG_TOKEN_CACHE = process.env.DEBUG_REDDIT === 'true';
+const clientLogger = Logger.get('reddit-client');
 
 // Pending auth promise for deduplicating concurrent auth calls
 let pendingAuthPromise: Promise<string | null> | null = null;
@@ -283,12 +286,12 @@ export class RedditClient {
    */
   private async auth(): Promise<string | null> {
     if (cachedToken && Date.now() < cachedTokenExpiry - TOKEN_EXPIRY_MS) {
-      if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Token cache HIT');
+      if (DEBUG_TOKEN_CACHE) clientLogger.debug('Token cache HIT');
       return cachedToken;
     }
 
     if (pendingAuthPromise) {
-      if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Auth already in flight, awaiting...');
+      if (DEBUG_TOKEN_CACHE) clientLogger.debug('Auth already in flight, awaiting...');
       return pendingAuthPromise;
     }
 
@@ -301,7 +304,7 @@ export class RedditClient {
   }
 
   private async performAuth(): Promise<string | null> {
-    if (DEBUG_TOKEN_CACHE) console.error('[RedditClient] Token cache MISS - authenticating');
+    if (DEBUG_TOKEN_CACHE) clientLogger.debug('Token cache MISS - authenticating');
 
     const credentials = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
 
