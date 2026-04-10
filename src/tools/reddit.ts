@@ -15,16 +15,13 @@ import {
 } from '../schemas/reddit.js';
 import { SearchClient } from '../clients/search.js';
 import { RedditClient, type PostResult, type Comment } from '../clients/reddit.js';
-import { REDDIT, CONCURRENCY, getCapabilities, getMissingEnvMessage, parseEnv } from '../config/index.js';
+import { REDDIT, getCapabilities, getMissingEnvMessage, parseEnv } from '../config/index.js';
 import { classifyError } from '../utils/errors.js';
-import { createLLMProcessor, processContentWithLLM } from '../services/llm-processor.js';
-import { pMap } from '../utils/concurrency.js';
 import {
   mcpLog,
   formatSuccess,
   formatError,
   formatBatchHeader,
-  TOKEN_BUDGETS,
 } from './utils.js';
 import {
   createToolReporter,
@@ -111,10 +108,8 @@ function formatPost(result: PostResult, fetchComments: boolean, maxWords: number
     wordsUsed += commentsResult.wordsUsed;
 
     if (commentsResult.truncated > 0) {
-      md += `\n_${commentsResult.truncated} more comments not shown (word budget reached). Use use_llm=true for AI-synthesized summary._\n\n`;
+      md += `\n_${commentsResult.truncated} more comments not shown (word budget reached)._\n\n`;
     }
-  } else if (!fetchComments) {
-    md += `_Comments not fetched (fetch_comments=false)_\n\n`;
   }
 
   return { md, wordsUsed, commentsShown, commentsTruncated };
@@ -130,7 +125,8 @@ export async function handleSearchReddit(
   reporter: ToolReporter = NOOP_REPORTER,
 ): Promise<ToolExecutionResult<SearchRedditOutput>> {
   try {
-    const limited = queries.slice(0, 50);
+    const startTime = Date.now();
+    const limited = queries.slice(0, 100);
     const client = new SearchClient(apiKey);
     await reporter.log('info', `Searching Reddit with ${limited.length} queries`);
     await reporter.progress(15, 100, 'Searching Reddit');
@@ -150,7 +146,7 @@ export async function handleSearchReddit(
         message: `No Reddit URLs found for any of the ${limited.length} queries`,
         toolName: 'search-reddit',
         howToFix: ['Try broader or simpler search terms', 'Check spelling'],
-        alternatives: ['web-search(keywords=["topic reddit discussion"], objective="...") — broader Google search'],
+        alternatives: ['web-search(queries=["topic reddit discussion"], extract="...") — broader Google search'],
       }));
     }
 
@@ -160,11 +156,14 @@ export async function handleSearchReddit(
     await reporter.log('info', `Found ${urlList.length} unique Reddit URLs across ${limited.length} queries`);
     await reporter.progress(100, 100, 'Reddit search complete');
 
+    const executionTime = Date.now() - startTime;
     return toolSuccess(content, {
       content,
       metadata: {
-        query_count: limited.length,
-        total_urls: urlList.length,
+        total_items: limited.length,
+        successful: urlList.length,
+        failed: 0,
+        execution_time_ms: executionTime,
       },
     });
   } catch (error) {
@@ -183,14 +182,7 @@ export async function handleSearchReddit(
 // Get Reddit Posts Handler
 // ============================================================================
 
-interface GetRedditPostsOptions {
-  fetchComments?: boolean;
-  what_to_extract: string;
-}
-
-function enhanceExtractionInstruction(instruction: string): string {
-  return `${instruction}\n\n${REDDIT.EXTRACTION_SUFFIX}`;
-}
+// get-reddit-post no longer uses LLM — returns raw posts + comments
 
 // --- Internal types ---
 
@@ -229,49 +221,15 @@ function validatePostCount(urlCount: number): string | null {
   return null;
 }
 
-async function applyLlmToPost(
-  postContent: string,
-  result: PostResult,
-  url: string,
-  llmProcessor: NonNullable<ReturnType<typeof createLLMProcessor>>,
-  enhancedInstruction: string | undefined,
-  tokensPerUrl: number,
-  index: number,
-  total: number,
-): Promise<{ content: string; llmFailed: boolean }> {
-  mcpLog('info', `[${index}/${total}] Applying LLM extraction to ${url}`, 'reddit');
-
-  const llmResult = await processContentWithLLM(
-    postContent,
-    { use_llm: true, what_to_extract: enhancedInstruction, max_tokens: tokensPerUrl },
-    llmProcessor,
-  );
-
-  if (llmResult.processed) {
-    mcpLog('debug', `[${index}/${total}] LLM extraction complete`, 'reddit');
-    const header = `## LLM Analysis: ${result.post.title}\n\n**r/${result.post.subreddit}** • u/${result.post.author} • ⬆️ ${result.post.score} • 💬 ${result.post.commentCount} comments\n🔗 ${result.post.url}\n\n`;
-    return { content: header + llmResult.content, llmFailed: false };
-  }
-
-  mcpLog('warning', `[${index}/${total}] LLM extraction failed: ${llmResult.error || 'unknown'}`, 'reddit');
-  return { content: postContent, llmFailed: true };
-}
-
 async function fetchAndProcessPosts(
   results: Map<string, PostResult | Error>,
-  urls: string[],
-  fetchComments: boolean,
-  what_to_extract: string,
 ): Promise<PostProcessResult> {
-  const llmProcessor = createLLMProcessor();
-  const tokensPerUrl = Math.floor(TOKEN_BUDGETS.RESEARCH / urls.length);
-  const enhancedInstruction = enhanceExtractionInstruction(what_to_extract);
-
   let failed = 0;
   const failedContents: string[] = [];
-  const successEntries: { url: string; result: PostResult; content: string; wordsUsed: number }[] = [];
-  const skippedUrls: string[] = [];
+  const successContents: string[] = [];
+  let successful = 0;
   let totalWordsUsed = 0;
+  const skippedUrls: string[] = [];
 
   for (const [url, result] of results) {
     if (result instanceof Error) {
@@ -285,35 +243,14 @@ async function fetchAndProcessPosts(
       continue;
     }
 
-    const formatted = formatPost(result, fetchComments, REDDIT.MAX_WORDS_PER_POST);
+    const formatted = formatPost(result, true, REDDIT.MAX_WORDS_PER_POST);
     totalWordsUsed += formatted.wordsUsed;
-    successEntries.push({ url, result, content: formatted.md, wordsUsed: formatted.wordsUsed });
+    successContents.push(formatted.md);
+    successful++;
   }
 
-  let llmErrors = 0;
-  let processedEntries: typeof successEntries;
-
-  // Always run LLM when available
-  if (llmProcessor && successEntries.length > 0) {
-    const llmResults = await pMap(successEntries, async (entry, index) => {
-      const llmOut = await applyLlmToPost(
-        entry.content, entry.result, entry.url, llmProcessor, enhancedInstruction,
-        tokensPerUrl, index + 1, successEntries.length,
-      );
-      if (llmOut.llmFailed) llmErrors++;
-      return { ...entry, content: llmOut.content };
-    }, CONCURRENCY.LLM_EXTRACTION);
-    processedEntries = llmResults;
-  } else {
-    if (!llmProcessor) {
-      mcpLog('warning', 'LLM unavailable (LLM_EXTRACTION_API_KEY not set). Returning raw content.', 'reddit');
-    }
-    processedEntries = successEntries;
-  }
-
-  const contents = [...failedContents, ...processedEntries.map(e => e.content)];
-
-  return { successful: successEntries.length, failed, llmErrors, llmAvailable: llmProcessor !== null, contents, totalWordsUsed, skippedUrls };
+  const contents = [...failedContents, ...successContents];
+  return { successful, failed, llmErrors: 0, llmAvailable: false, contents, totalWordsUsed, skippedUrls };
 }
 
 function buildRedditStatusExtras(
@@ -391,59 +328,39 @@ export async function handleGetRedditPosts(
   urls: string[],
   clientId: string,
   clientSecret: string,
-  options: GetRedditPostsOptions,
   reporter: ToolReporter = NOOP_REPORTER,
 ): Promise<ToolExecutionResult<GetRedditPostOutput>> {
+  const startTime = Date.now();
   try {
-    const { fetchComments = true, what_to_extract } = options;
-
     const validationError = validatePostCount(urls.length);
     if (validationError) return toolFailure(validationError);
 
     const totalBatches = Math.ceil(urls.length / REDDIT.BATCH_SIZE);
 
-    await reporter.log('info', `Fetching ${urls.length} Reddit post(s) across ${totalBatches} batch(es)`);
-    await reporter.progress(20, 100, 'Fetching Reddit post content');
+    await reporter.log('info', `Fetching ${urls.length} Reddit post(s)`);
+    await reporter.progress(20, 100, 'Fetching Reddit posts');
     const client = new RedditClient(clientId, clientSecret);
-    const batchResult = await client.batchGetPosts(urls, fetchComments);
-    await reporter.log(
-      'info',
-      `Fetched Reddit batch results with ${batchResult.rateLimitHits} rate-limit retry/retries`,
-    );
-    await reporter.progress(55, 100, 'Processing Reddit posts and LLM extraction');
+    const batchResult = await client.batchGetPosts(urls, true);
+    await reporter.progress(55, 100, 'Formatting posts and comments');
 
-    const processResult = await fetchAndProcessPosts(
-      batchResult.results, urls, fetchComments, what_to_extract,
-    );
-    await reporter.log(
-      'info',
-      `Processed ${processResult.successful} successful post(s) with ${processResult.failed} failure(s), ${processResult.totalWordsUsed.toLocaleString()} words`,
-    );
-    await reporter.progress(85, 100, 'Formatting Reddit output');
+    const processResult = await fetchAndProcessPosts(batchResult.results);
+    await reporter.progress(85, 100, 'Building output');
 
-    const tokensPerUrl = Math.floor(TOKEN_BUDGETS.RESEARCH / urls.length);
     const extraStatus = buildRedditStatusExtras(
-      batchResult.rateLimitHits, processResult.llmAvailable, processResult.llmErrors,
+      batchResult.rateLimitHits, false, 0,
     );
     const content = formatRedditOutput(
-      urls,
-      processResult,
-      fetchComments,
-      totalBatches,
-      tokensPerUrl,
-      extraStatus,
+      urls, processResult, true, totalBatches, 0, extraStatus,
     );
 
+    const executionTime = Date.now() - startTime;
     return toolSuccess(content, {
       content,
       metadata: {
-        total_urls: urls.length,
+        total_items: urls.length,
         successful: processResult.successful,
         failed: processResult.failed,
-        fetch_comments: fetchComments,
-        total_words_used: processResult.totalWordsUsed,
-        llm_failures: processResult.llmErrors,
-        total_batches: totalBatches,
+        execution_time_ms: executionTime,
         rate_limit_hits: batchResult.rateLimitHits,
       },
     });
@@ -458,7 +375,7 @@ export function registerSearchRedditTool(server: MCPServer): void {
       name: 'search-reddit',
       title: 'Search Reddit',
       description:
-        'Search for Reddit posts by appending "site:reddit.com" to 1-50 queries via Google. Returns a flat list of unique Reddit URLs. No ranking, no LLM processing — just URL discovery. Pipe results into get-reddit-post to fetch and analyze the actual content.',
+        'Search Google for Reddit posts matching up to 100 queries. Returns a flat list of unique Reddit URLs ready to pipe into get-reddit-post.',
       schema: searchRedditParamsSchema,
       outputSchema: searchRedditOutputSchema,
       annotations: {
@@ -489,7 +406,7 @@ export function registerGetRedditPostTool(server: MCPServer): void {
       name: 'get-reddit-post',
       title: 'Get Reddit Post',
       description:
-        'Fetch 1-50 Reddit posts with full comment trees and run LLM extraction. Provide what_to_extract with specific instructions (e.g., "Extract recommendations | pain points | consensus opinions"). The LLM synthesizes posts and comments into focused insights. Best used after search-reddit.',
+        'Fetch up to 100 Reddit posts with full threaded comment trees. Returns the raw post content and all comments with author, score, and OP markers.',
       schema: getRedditPostParamsSchema,
       outputSchema: getRedditPostOutputSchema,
       annotations: {
@@ -499,7 +416,7 @@ export function registerGetRedditPostTool(server: MCPServer): void {
         openWorldHint: true,
       },
     },
-    async ({ urls, fetch_comments, what_to_extract }, ctx) => {
+    async ({ urls }, ctx) => {
       if (!getCapabilities().reddit) {
         return toToolResponse(toolFailure(getMissingEnvMessage('reddit')));
       }
@@ -510,7 +427,6 @@ export function registerGetRedditPostTool(server: MCPServer): void {
         urls,
         env.REDDIT_CLIENT_ID!,
         env.REDDIT_CLIENT_SECRET!,
-        { fetchComments: fetch_comments, what_to_extract },
         reporter,
       );
 

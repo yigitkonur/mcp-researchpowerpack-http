@@ -1,33 +1,25 @@
 import { z } from 'zod';
 
-// URL schema with protocol validation
 const urlSchema = z
-  .string({ error: 'scrape-links: URL is required' })
+  .string()
   .url({ message: 'scrape-links: Invalid URL format' })
   .refine(
     url => url.startsWith('http://') || url.startsWith('https://'),
-    { message: 'scrape-links: URL must use http:// or https:// protocol' }
+    { message: 'scrape-links: URL must use http:// or https://' }
   )
-  .describe('A fully-qualified HTTP or HTTPS URL to fetch and extract content from.');
+  .describe('A fully-qualified HTTP or HTTPS URL to scrape.');
 
-// Input schema for scrape-links tool
 export const scrapeLinksParamsSchema = z.object({
   urls: z
-    .array(urlSchema, { error: 'scrape-links: URLs must be an array' })
-    .min(1, { message: 'scrape-links: At least 1 URL is required' })
-    .max(50, { message: 'scrape-links: Maximum 50 URLs allowed per request' })
-    .describe('URLs to scrape (1-50). Token budget (32K) is split across URLs: 3 URLs get ~10K tokens each (deep), 10 get ~3K (balanced), 50 get ~640 (scan). Each page is scraped, cleaned, and processed by the LLM per what_to_extract.'),
-  timeout: z
-    .number({ error: 'scrape-links: Timeout must be a number' })
-    .min(5, { message: 'scrape-links: Timeout must be at least 5 seconds' })
-    .max(120, { message: 'scrape-links: Timeout cannot exceed 120 seconds' })
-    .default(30)
-    .describe('Timeout in seconds for each URL.'),
-  what_to_extract: z
-    .string({ error: 'scrape-links: what_to_extract is required' })
-    .min(5, { message: 'scrape-links: what_to_extract must be at least 5 characters' })
-    .max(1000, { message: 'scrape-links: Extraction instructions too long (max 1000 characters)' })
-    .describe('REQUIRED. Extraction instructions for the LLM. The LLM processes each scraped page and extracts ONLY what you specify. Formula: "Extract [target1] | [target2] | [target3] with focus on [aspect]". Be specific: "pricing tiers | monthly vs annual cost | free tier limits" not just "pricing".'),
+    .array(urlSchema)
+    .min(1, { message: 'scrape-links: At least 1 URL required' })
+    .max(100, { message: 'scrape-links: Maximum 100 URLs allowed' })
+    .describe('Web page URLs to scrape and extract content from.'),
+  extract: z
+    .string()
+    .min(5, { message: 'scrape-links: extract must be at least 5 characters' })
+    .max(1000, { message: 'scrape-links: extract too long (max 1000 chars)' })
+    .describe('What to pull from each page. The LLM reads the scraped content and returns only what you specify. Be specific: "pricing tiers | free tier limits | enterprise contact info" not "pricing".'),
 }).strict();
 
 export type ScrapeLinksParams = z.infer<typeof scrapeLinksParamsSchema>;
@@ -35,52 +27,14 @@ export type ScrapeLinksParams = z.infer<typeof scrapeLinksParamsSchema>;
 export const scrapeLinksOutputSchema = z.object({
   content: z
     .string()
-    .describe('LLM-extracted content from scraped pages, structured per what_to_extract instructions.'),
+    .describe('LLM-extracted content from scraped pages per the extract instructions.'),
   metadata: z.object({
-    total_urls: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe('Total number of input URLs processed.'),
-    successful: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe('Number of URLs that were fetched successfully.'),
-    failed: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe('Number of URLs that failed validation or scraping.'),
-    total_credits: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe('Total external scraping credits consumed.'),
-    execution_time_ms: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe('Elapsed execution time in milliseconds.'),
-    tokens_per_url: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe('Allocated LLM token budget per successfully scraped URL.'),
-    total_token_budget: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe('Overall token budget available for extraction.'),
-    batches_processed: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe('Number of scrape batches executed.'),
-  }).strict().describe('Structured metadata about the scrape and extraction batch.'),
+    total_items: z.number().int().nonnegative().describe('Number of URLs processed.'),
+    successful: z.number().int().nonnegative().describe('URLs fetched successfully.'),
+    failed: z.number().int().nonnegative().describe('URLs that failed.'),
+    execution_time_ms: z.number().int().nonnegative().describe('Wall clock time in milliseconds.'),
+    total_credits: z.number().int().nonnegative().describe('External scraping credits consumed.'),
+  }).strict(),
 }).strict();
 
 export type ScrapeLinksOutput = z.infer<typeof scrapeLinksOutputSchema>;
