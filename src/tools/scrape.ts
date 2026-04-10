@@ -231,14 +231,11 @@ function buildScrapeMetadata(
   executionTime: number,
 ): ScrapeLinksOutput['metadata'] {
   return {
-    total_urls: params.urls.length,
+    total_items: params.urls.length,
     successful: metrics.successful,
     failed: metrics.failed,
-    total_credits: metrics.totalCredits,
     execution_time_ms: executionTime,
-    tokens_per_url: tokensPerUrl,
-    total_token_budget: TOKEN_BUDGETS.SCRAPER,
-    batches_processed: totalBatches,
+    total_credits: metrics.totalCredits,
   };
 }
 
@@ -323,10 +320,10 @@ export async function handleScrapeLinks(
     ]);
   }
 
-  const enhancedInstruction = enhanceExtractionInstruction(params.what_to_extract);
+  const enhancedInstruction = enhanceExtractionInstruction(params.extract);
 
   await reporter.progress(35, 100, 'Fetching page content');
-  const results = await clients.client.scrapeMultiple(validUrls, { timeout: params.timeout });
+  const results = await clients.client.scrapeMultiple(validUrls, { timeout: 300 });
   mcpLog('info', `Scraping complete. Processing ${results.length} results...`, 'scrape');
   await reporter.log('info', `Fetched ${results.length} scrape response(s) from the provider`);
   await reporter.progress(60, 100, 'Cleaning and classifying scrape results');
@@ -367,7 +364,7 @@ export function registerScrapeLinksTool(server: MCPServer): void {
       name: 'scrape-links',
       title: 'Scrape Links',
       description:
-        'Scrape 1-50 web pages and run LLM extraction on each. Provide what_to_extract with specific targets (e.g., "Extract pricing tiers | feature limits | API rate limits"). Token budget (32K) is split across URLs: 3 URLs get ~10K tokens each (deep), 10 get ~3K (balanced), 50 get ~640 (scan).',
+        'Scrape up to 100 web pages and run LLM extraction on each. Returns only the data you specify in the extract field — everything else is filtered out.',
       schema: scrapeLinksParamsSchema,
       outputSchema: scrapeLinksOutputSchema,
       annotations: {

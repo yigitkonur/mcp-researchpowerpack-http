@@ -83,7 +83,7 @@ function buildRawOutput(
 function buildClassifiedOutput(
   classification: ClassificationResult,
   aggregation: SearchAggregation,
-  objective: string,
+  extract: string,
   totalKeywords: number,
 ): string {
   const rankedUrls = aggregation.rankedUrls;
@@ -116,7 +116,7 @@ function buildClassifiedOutput(
 
   // Header with generated title and synthesis
   lines.push(`## ${classification.title}`);
-  lines.push(`> Objective: ${objective}`);
+  lines.push(`> Looking for: ${extract}`);
   lines.push(`> ${totalKeywords} queries → ${rankedUrls.length} URLs → ${tiers.high.length} highly relevant, ${tiers.maybe.length} possibly relevant`);
   lines.push('');
   lines.push(`**Summary:** ${classification.synthesis}`);
@@ -191,12 +191,10 @@ function buildMetadata(
     .map(s => s.keyword);
 
   return {
-    total_keywords: totalKeywords,
-    total_results: aggregation.rankedUrls.length,
+    total_items: totalKeywords,
+    successful: aggregation.rankedUrls.length,
+    failed: totalKeywords - searches.filter(s => s.results.length > 0).length,
     execution_time_ms: executionTime,
-    total_unique_urls: aggregation.totalUniqueUrls,
-    consensus_url_count: aggregation.rankedUrls.filter(u => u.isConsensus).length,
-    frequency_threshold: aggregation.frequencyThreshold,
     llm_classified: llmClassified,
     ...(llmError ? { llm_error: llmError } : {}),
     coverage_summary: coverageSummary,
@@ -229,7 +227,7 @@ function buildWebSearchError(
   });
 
   return toolFailure(
-    `${errorContent}\n\nExecution time: ${formatDuration(executionTime)}\nKeywords: ${params.keywords.length}`,
+    `${errorContent}\n\nExecution time: ${formatDuration(executionTime)}\nQueries: ${params.queries.length}`,
   );
 }
 
@@ -242,11 +240,11 @@ export async function handleWebSearch(
   const startTime = Date.now();
 
   try {
-    mcpLog('info', `Searching for ${params.keywords.length} keyword(s)`, 'search');
-    await reporter.log('info', `Searching for ${params.keywords.length} keyword(s)`);
+    mcpLog('info', `Searching for ${params.queries.length} query/queries`, 'search');
+    await reporter.log('info', `Searching for ${params.queries.length} query/queries`);
     await reporter.progress(15, 100, 'Submitting search queries');
 
-    const response = await executeSearches(params.keywords);
+    const response = await executeSearches(params.queries);
     await reporter.progress(50, 100, 'Collected search results');
 
     const { aggregation } = processResults(response);
@@ -269,21 +267,21 @@ export async function handleWebSearch(
         llmError = 'LLM unavailable (LLM_EXTRACTION_API_KEY not set). Falling back to raw output.';
         mcpLog('warning', llmError, 'search');
       }
-      markdown = buildRawOutput(params.keywords, aggregation, response.searches);
+      markdown = buildRawOutput(params.queries, aggregation, response.searches);
       await reporter.progress(80, 100, 'Ranking search results');
     } else {
       // LLM classification path
       await reporter.progress(65, 100, 'Classifying results by relevance');
       const classification = await classifySearchResults(
         aggregation.rankedUrls,
-        params.objective,
+        params.extract,
         response.totalKeywords,
         llmProcessor,
       );
 
       if (classification.result) {
         markdown = buildClassifiedOutput(
-          classification.result, aggregation, params.objective, response.totalKeywords,
+          classification.result, aggregation, params.extract, response.totalKeywords,
         );
         llmClassified = true;
         await reporter.progress(85, 100, 'Formatted classified results');
@@ -291,7 +289,7 @@ export async function handleWebSearch(
         // Classification failed — fall back to raw
         llmError = classification.error ?? 'Unknown classification error';
         mcpLog('warning', `Classification failed, falling back to raw: ${llmError}`, 'search');
-        markdown = buildRawOutput(params.keywords, aggregation, response.searches);
+        markdown = buildRawOutput(params.queries, aggregation, response.searches);
         await reporter.progress(85, 100, 'Classification failed, using raw output');
       }
     }
@@ -304,7 +302,7 @@ export async function handleWebSearch(
     mcpLog('info', `Search completed: ${aggregation.rankedUrls.length} URLs, classified=${llmClassified}`, 'search');
     await reporter.log('info', `Search completed with ${aggregation.rankedUrls.length} URLs (classified: ${llmClassified})`);
 
-    const footer = `\n---\n*${formatDuration(executionTime)} | ${aggregation.totalUniqueUrls} unique URLs | ${metadata.consensus_url_count} consensus | threshold ≥${aggregation.frequencyThreshold}${llmClassified ? ' | LLM classified' : ''}*`;
+    const footer = `\n---\n*${formatDuration(executionTime)} | ${aggregation.totalUniqueUrls} unique URLs${llmClassified ? ' | LLM classified' : ''}*`;
     const fullMarkdown = markdown + footer;
 
     return toolSuccess(fullMarkdown, { content: fullMarkdown, metadata });
@@ -319,7 +317,7 @@ export function registerWebSearchTool(server: MCPServer): void {
       name: 'web-search',
       title: 'Web Search',
       description:
-        'Search Google with 1-100 keywords in parallel. Each keyword runs as a separate search; results are aggregated, deduplicated, and ranked. Provide an objective describing what you need — an LLM classifies every result into 3 tiers (highly relevant / maybe relevant / other) based on titles and snippets alone (no URL fetching). Output: synthesis paragraph + tiered markdown table. Set raw=true to skip classification and get the traditional consensus-ranked URL list.',
+        'Run up to 100 Google searches in parallel, aggregate and deduplicate results, then classify each URL by relevance to your extract goal. Returns a tiered table: highly relevant, maybe relevant, and other. Set raw=true for unclassified ranked results.',
       schema: webSearchParamsSchema,
       outputSchema: webSearchOutputSchema,
       annotations: {

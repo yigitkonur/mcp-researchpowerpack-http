@@ -375,7 +375,7 @@ async function main(): Promise<void> {
           name: 'scrape-links',
           arguments: {
             urls: ['https://example.com'],
-            what_to_extract: 'Extract main content',
+            extract: 'Extract main content',
           },
         },
       },
@@ -386,49 +386,45 @@ async function main(): Promise<void> {
     assert.ok(JSON.stringify(capabilityJson.result).includes('SCRAPEDO_API_KEY'));
 
     // --- Schema rejection tests ---
-    // web-search requires both keywords + objective
+    // web-search: requires queries + extract
     assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'web-search', { keywords: [], objective: 'test' }, 10),
-      'web-search empty keywords',
+      await callTool(baseUrl, sessionId, 'web-search', { queries: [], extract: 'test goal' }, 10),
+      'web-search empty queries',
     );
     assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'web-search', { keywords: ['test'] }, 10),
-      'web-search missing objective',
+      await callTool(baseUrl, sessionId, 'web-search', { queries: ['test'] }, 10),
+      'web-search missing extract',
     );
 
-    // search-reddit requires at least 1 query
+    // search-reddit: requires queries
     assertToolInputRejected(
       await callTool(baseUrl, sessionId, 'search-reddit', { queries: [] }, 11),
       'search-reddit empty queries',
     );
 
-    // get-reddit-post requires urls + what_to_extract
+    // get-reddit-post: requires urls only
     assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'get-reddit-post', { urls: [], what_to_extract: 'test' }, 12),
+      await callTool(baseUrl, sessionId, 'get-reddit-post', { urls: [] }, 12),
       'get-reddit-post empty URLs',
     );
-    assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'get-reddit-post', { urls: ['https://reddit.com/r/test/comments/abc/x/'] }, 12),
-      'get-reddit-post missing what_to_extract',
-    );
 
-    // scrape-links requires urls + what_to_extract
+    // scrape-links: requires urls + extract
     assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'scrape-links', { urls: [], what_to_extract: 'test data' }, 13),
+      await callTool(baseUrl, sessionId, 'scrape-links', { urls: [], extract: 'test data' }, 13),
       'scrape-links empty URLs',
     );
     assertToolInputRejected(
       await callTool(baseUrl, sessionId, 'scrape-links', { urls: ['https://example.com'] }, 13),
-      'scrape-links missing what_to_extract',
+      'scrape-links missing extract',
     );
 
-    // scrape-links rejects non-http protocols
+    // scrape-links: rejects non-http protocols
     assertToolInputRejected(
       await callTool(
         baseUrl,
         sessionId,
         'scrape-links',
-        { urls: ['ftp://example.com/file.txt'], what_to_extract: 'test data' },
+        { urls: ['ftp://example.com/file.txt'], extract: 'test data' },
         14,
       ),
       'scrape-links rejects ftp scheme',
