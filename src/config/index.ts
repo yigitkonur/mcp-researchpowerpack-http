@@ -119,20 +119,16 @@ export function getMissingEnvMessage(capability: keyof Capabilities): string {
 }
 
 // ============================================================================
-// Concurrency Limits — tuned for 2-core deployments
+// Concurrency Limits
 // ============================================================================
 
 export const CONCURRENCY = {
-  /** Serper API — tiny JSON responses, pure I/O, no CPU cost */
-  SEARCH: 30,
-  /** Scrape.do — HTML responses (50-500KB), Turndown conversion is CPU work */
-  SCRAPER: 20,
-  /** Reddit API — moderate payloads, aggressive rate limiting (60 req/min) */
-  REDDIT: 10,
-  /** LLM extraction — remote inference bottleneck. Tune via LLM_CONCURRENCY env */
+  SEARCH: safeParseInt(process.env.CONCURRENCY_SEARCH, 50, 1, 200),
+  SCRAPER: safeParseInt(process.env.CONCURRENCY_SCRAPER, 50, 1, 200),
+  REDDIT: safeParseInt(process.env.CONCURRENCY_REDDIT, 50, 1, 200),
   LLM_EXTRACTION: safeParseInt(
     process.env.LLM_CONCURRENCY || process.env.LLM_EXTRACTION_CONCURRENCY,
-    10, 1, 50,
+    50, 1, 200,
   ),
 } as const;
 
