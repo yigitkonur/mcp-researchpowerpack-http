@@ -249,7 +249,19 @@ export async function processContentWithLLM(
     ? content.substring(0, MAX_LLM_INPUT_CHARS) + '\n\n[Content truncated due to length]'
     : content;
 
-  const urlLine = config.url ? `PAGE URL: ${config.url}\n\n` : '';
+  // Sanitize URL before sending to LLM: drop query string and fragment
+  // so signed URLs, session tokens, auth params, or tracking hashes never
+  // land in a third-party LLM prompt. Keep origin + path for page-type classification.
+  const safeUrl = (() => {
+    if (!config.url) return undefined;
+    try {
+      const u = new URL(config.url);
+      return `${u.origin}${u.pathname}`;
+    } catch {
+      return undefined;
+    }
+  })();
+  const urlLine = safeUrl ? `PAGE URL: ${safeUrl}\n\n` : '';
 
   const prompt = config.extract
     ? `You are a factual extractor for a research agent. Extract ONLY the information that matches the instruction below. Do not summarize, interpret, or editorialize.
@@ -541,10 +553,14 @@ ${lines.join('\n')}`;
   try {
     mcpLog('info', `Classifying ${urlsToClassify.length} URLs against objective`, 'llm');
 
+    // Output budget needs room for: 50 results × (rank + tier + source_type + reason)
+    // plus gaps[] with descriptions, refine_queries[] with rationales, synthesis with citations,
+    // title, confidence, and confidence_reason. 4000 truncates JSON mid-structure for full outputs;
+    // 8000 leaves headroom for the richest cases.
     const response = await requestTextWithFallback(
       processor,
       prompt,
-      4000,
+      8000,
       'Search classification',
     );
 
@@ -556,8 +572,10 @@ ${lines.join('\n')}`;
     const cleaned = response.content.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
     const parsed = JSON.parse(cleaned) as ClassificationResult;
 
-    // Validate the response shape
-    if (!parsed.title || !parsed.synthesis || !Array.isArray(parsed.results)) {
+    // Validate the response shape.
+    // Note: synthesis is typed not truthy — the prompt explicitly instructs an empty string
+    // for the all-OTHER case, and we must not reject that.
+    if (!parsed.title || typeof parsed.synthesis !== 'string' || !Array.isArray(parsed.results)) {
       return { result: null, error: 'LLM response missing required fields (title, synthesis, results)' };
     }
 
@@ -673,11 +691,16 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isConceptGroupArray(value: unknown): value is ResearchBriefConceptGroup[] {
-  return Array.isArray(value) && value.every((g) =>
-    typeof g === 'object' && g !== null
-    && typeof (g as Record<string, unknown>).facet === 'string'
-    && isStringArray((g as Record<string, unknown>).queries),
-  );
+  return Array.isArray(value) && value.every((g) => {
+    if (typeof g !== 'object' || g === null) return false;
+    const facet = (g as Record<string, unknown>).facet;
+    const queries = (g as Record<string, unknown>).queries;
+    return typeof facet === 'string'
+      && facet.trim().length > 0
+      && isStringArray(queries)
+      && queries.length > 0
+      && queries.every((q) => q.trim().length > 0);
+  });
 }
 
 export function parseResearchBrief(raw: string): ResearchBrief | null {

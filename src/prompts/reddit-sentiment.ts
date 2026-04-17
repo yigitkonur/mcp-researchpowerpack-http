@@ -14,7 +14,10 @@ export function registerRedditSentimentPrompt(server: MCPServer): void {
     },
     async ({ topic, subreddits }) => {
       const subredditList = subreddits
-        ? subreddits.split(',').map((value) => value.trim()).filter(Boolean)
+        ? subreddits
+            .split(',')
+            .map((value) => value.trim().replace(/^\/?r\//i, ''))
+            .filter(Boolean)
         : [];
       const subredditScope = subredditList.length
         ? ` Scope Reddit searches to ${subredditList.map((s) => `r/${s}`).join(', ')} when possible.`
