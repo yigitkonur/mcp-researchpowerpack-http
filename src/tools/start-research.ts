@@ -13,8 +13,10 @@ import {
   renderResearchBrief,
 } from '../services/llm-processor.js';
 import { buildWorkflowKey } from '../utils/workflow-key.js';
+import { classifyError } from '../utils/errors.js';
 import { mcpLog } from '../utils/logger.js';
-import { toolSuccess, toToolResponse, type ToolExecutionResult } from './mcp-helpers.js';
+import { toolFailure, toolSuccess, toToolResponse, type ToolExecutionResult } from './mcp-helpers.js';
+import { formatError } from './utils.js';
 
 export function buildStaticScaffolding(goal?: string): string {
   const focusLine = goal
@@ -116,26 +118,46 @@ async function handleStartResearch(
   workflowKey: string,
   signal?: AbortSignal,
 ): Promise<ToolExecutionResult<StartResearchOutput>> {
-  const store = getWorkflowStateStore();
+  try {
+    const store = getWorkflowStateStore();
 
-  // Always unlock the session first — bootstrap gate must not depend on LLM availability.
-  await store.patch(workflowKey, {
-    bootstrapped: true,
-    bootstrappedAt: new Date().toISOString(),
-  });
+    // Always unlock the session first — bootstrap gate must not depend on LLM availability.
+    await store.patch(workflowKey, {
+      bootstrapped: true,
+      bootstrappedAt: new Date().toISOString(),
+    });
 
-  const scaffolding = buildStaticScaffolding(params.goal);
+    const scaffolding = buildStaticScaffolding(params.goal);
 
-  let brief = '';
-  if (params.goal) {
-    brief = await buildGoalAwareBrief(params.goal, signal);
+    let brief = '';
+    if (params.goal) {
+      brief = await buildGoalAwareBrief(params.goal, signal);
+    }
+
+    // If a goal was provided but the brief is empty, tell the caller why — otherwise
+    // they cannot distinguish "no goal" from "goal-aware planner failed."
+    const briefFallbackNote = params.goal && !brief
+      ? '\n\n---\n\n> _Goal-tailored brief unavailable: LLM planner is not configured or failed this call. The static playbook above still applies; you can proceed with it, or retry `start-research` after verifying `LLM_API_KEY`._'
+      : '';
+
+    const content = brief
+      ? `${scaffolding}\n\n---\n\n${brief}`
+      : `${scaffolding}${briefFallbackNote}`;
+
+    return toolSuccess(content, { content });
+  } catch (err: unknown) {
+    const structuredError = classifyError(err);
+    mcpLog('error', `start-research: ${structuredError.message}`, 'start-research');
+    return toolFailure(
+      formatError({
+        code: structuredError.code,
+        message: structuredError.message,
+        retryable: structuredError.retryable,
+        toolName: 'start-research',
+        howToFix: ['Retry start-research. If the failure persists, verify the workflow-state store (Redis) and LLM_API_KEY.'],
+      }),
+    );
   }
-
-  const content = brief
-    ? `${scaffolding}\n\n---\n\n${brief}`
-    : scaffolding;
-
-  return toolSuccess(content, { content });
 }
 
 export function registerStartResearchTool(server: MCPServer): void {

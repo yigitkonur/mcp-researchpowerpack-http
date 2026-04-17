@@ -75,6 +75,18 @@ test('parseResearchBrief rejects empty concept_groups', () => {
   assert.equal(parseResearchBrief(JSON.stringify(bad)), null);
 });
 
+test('parseResearchBrief rejects concept groups with empty queries[]', () => {
+  const bad = JSON.parse(validBriefJson);
+  bad.concept_groups[0].queries = [];
+  assert.equal(parseResearchBrief(JSON.stringify(bad)), null);
+});
+
+test('parseResearchBrief rejects concept groups with blank facet', () => {
+  const bad = JSON.parse(validBriefJson);
+  bad.concept_groups[0].facet = '   ';
+  assert.equal(parseResearchBrief(JSON.stringify(bad)), null);
+});
+
 test('parseResearchBrief rejects invalid freshness_window', () => {
   const bad = JSON.parse(validBriefJson);
   bad.freshness_window = 'centuries';
