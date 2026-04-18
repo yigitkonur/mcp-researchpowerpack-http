@@ -22,6 +22,7 @@ import { getLLMHealth } from './src/services/llm-processor.js';
 import {
   closeWorkflowStateStore,
   configureWorkflowStateStore,
+  getWorkflowStateStore,
 } from './src/services/workflow-state.js';
 import { registerAllTools } from './src/tools/registry.js';
 
@@ -173,6 +174,13 @@ async function buildSessionConfig(): Promise<{
 
 function buildHealthPayload(server: MCPServer, startedAt: number) {
   const llm = getLLMHealth();
+  // Workflow-state size — when the in-memory store backs us, this is now
+  // bounded by the TTL sweep added in mcp-revisions/contract-fixes/04.
+  let workflowStateSize: number | null = null;
+  try {
+    const store = getWorkflowStateStore();
+    workflowStateSize = store.size?.() ?? null;
+  } catch { /* store not configured yet */ }
   return {
     status: 'ok',
     name: SERVER.NAME,
@@ -180,6 +188,7 @@ function buildHealthPayload(server: MCPServer, startedAt: number) {
     transport: 'http',
     uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
     active_sessions: server.getActiveSessions().length,
+    workflow_state_size: workflowStateSize,
     // LLM health — surfaced so capability-aware clients render degraded mode
     // once at session start instead of parsing per-call footers.
     llm_planner_ok: llm.lastPlannerOk,
