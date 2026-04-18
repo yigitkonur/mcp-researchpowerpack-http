@@ -103,6 +103,17 @@ function createScrapeErrorResponse(
   );
 }
 
+/** Reddit subdomains that should be routed to get-reddit-post instead. */
+const REDDIT_HOST = /(?:^|\.)reddit\.com$/i;
+
+function isRedditUrl(url: string): boolean {
+  try {
+    return REDDIT_HOST.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function validateAndPartitionUrls(urls: string[]): { validUrls: string[]; invalidUrls: string[] } {
   const validUrls: string[] = [];
   const invalidUrls: string[] = [];
@@ -298,6 +309,26 @@ export async function handleScrapeLinks(
 
   if (!params.urls || params.urls.length === 0) {
     return createScrapeErrorResponse('NO_URLS', 'No URLs provided', startTime, params.urls?.length || 0);
+  }
+
+  // Reddit URLs are structurally different (threaded comments, SPA shell,
+  // Cloudflare-fronted JSON API). Reject the entire batch so the caller
+  // re-routes to get-reddit-post — silent partial-routing is the
+  // [FOOTER-BAD] / [REDUNDANT] anti-pattern from the derailment evidence.
+  // See: mcp-revisions/tool-surface/03-reddit-url-routing-in-scrape-links.md
+  const redditUrls = params.urls.filter(isRedditUrl);
+  if (redditUrls.length > 0) {
+    return createScrapeErrorResponse(
+      'UNSUPPORTED_URL_TYPE',
+      `scrape-links does not support Reddit URLs. Use get-reddit-post for: ${redditUrls.join(', ')}`,
+      startTime,
+      params.urls.length,
+      false,
+      [
+        `get-reddit-post(urls=[${redditUrls.map((u) => `"${u}"`).join(', ')}]) — fetch threaded posts and comments directly`,
+        'web-search(queries=["..."], extract="...", scope: "reddit") — find Reddit post permalinks first if these URLs were guesses',
+      ],
+    );
   }
 
   const { validUrls, invalidUrls } = validateAndPartitionUrls(params.urls);

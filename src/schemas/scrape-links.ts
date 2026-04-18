@@ -13,7 +13,7 @@ export const scrapeLinksParamsSchema = z.object({
   urls: z
     .array(urlSchema)
     .min(1, { message: 'scrape-links: At least 1 URL required' })
-    .describe('Web page URLs to scrape and extract content from.'),
+    .describe('Web page URLs to scrape and extract content from. Reddit URLs (`reddit.com/...`) are rejected with `UNSUPPORTED_URL_TYPE` — use get-reddit-post for `reddit.com/r/.../comments/...` permalinks.'),
   extract: z
     .string()
     .min(1, { message: 'scrape-links: extract cannot be empty' })
