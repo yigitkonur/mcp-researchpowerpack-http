@@ -492,7 +492,15 @@ export function registerWebSearchTool(server: MCPServer): void {
         idempotentHint: true,
         destructiveHint: false,
         openWorldHint: true,
+        // Non-standard precondition hint. mcp-use's ToolAnnotations type
+        // does not expose `experimental` natively (the SDK schema uses
+        // $strip) but the runtime forwards the whole annotations object
+        // verbatim. Cast keeps TS happy. See:
+        //   docs/code-review/context/04-session-and-workflow-state.md
+        //   mcp-revisions/contract-fixes/03-precondition-annotation-on-gated-tools.md
+        ...({ experimental: { requires: ['start-research'] } } as Record<string, unknown>),
       },
+      _meta: { requires: ['start-research'] },
     },
     async (args, ctx) => {
       if (!getCapabilities().search) {

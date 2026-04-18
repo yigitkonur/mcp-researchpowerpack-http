@@ -331,7 +331,10 @@ export function registerGetRedditPostTool(server: MCPServer): void {
         idempotentHint: true,
         destructiveHint: false,
         openWorldHint: true,
+        // See contract-fixes/03 — non-standard precondition hint.
+        ...({ experimental: { requires: ['start-research'] } } as Record<string, unknown>),
       },
+      _meta: { requires: ['start-research'] },
     },
     async ({ urls }, ctx) => {
       if (!getCapabilities().reddit) {

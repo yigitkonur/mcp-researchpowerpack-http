@@ -10,11 +10,13 @@ export interface WorkflowState {
 export interface WorkflowStateStore {
   get(key: string): Promise<WorkflowState>;
   patch(key: string, patch: Partial<WorkflowState>): Promise<WorkflowState>;
+  size?(): number;
   close?(): Promise<void>;
 }
 
 const WORKFLOW_STATE_TTL_SECONDS = 60 * 60 * 24;
 const WORKFLOW_STATE_PREFIX = 'research-pack:workflow:';
+const SWEEP_INTERVAL_MS = 60_000;
 
 export function emptyWorkflowState(): WorkflowState {
   return {
@@ -24,22 +26,75 @@ export function emptyWorkflowState(): WorkflowState {
   };
 }
 
-export function createMemoryWorkflowStateStore(): WorkflowStateStore {
-  const states = new Map<string, WorkflowState>();
+interface MemoryWorkflowStateOptions {
+  /** Override the wall-clock source — for tests. Defaults to Date.now. */
+  readonly now?: () => number;
+  /** Minimum interval between sweeps. Defaults to 60s. */
+  readonly sweepIntervalMs?: number;
+  /** TTL in seconds. Defaults to 24h to match the Redis store. */
+  readonly ttlSeconds?: number;
+}
+
+interface MemoryEntry {
+  readonly value: WorkflowState;
+  updatedAt: number;
+}
+
+/**
+ * In-memory workflow state with TTL eviction. Mirrors the 24h TTL the
+ * Redis store gets via `EX`. Without this, every anonymous client minted
+ * a key the process could never reclaim — confirmed in production where
+ * health://status reported 521 sessions at 31h uptime.
+ *
+ * See: docs/code-review/context/04-session-and-workflow-state.md (E7).
+ */
+export function createMemoryWorkflowStateStore(
+  opts: MemoryWorkflowStateOptions = {},
+): WorkflowStateStore {
+  const now = opts.now ?? (() => Date.now());
+  const sweepIntervalMs = opts.sweepIntervalMs ?? SWEEP_INTERVAL_MS;
+  const ttlMs = (opts.ttlSeconds ?? WORKFLOW_STATE_TTL_SECONDS) * 1000;
+  const states = new Map<string, MemoryEntry>();
+  let lastSweepAt = 0;
+
+  function sweep(currentTime: number): void {
+    if (currentTime - lastSweepAt < sweepIntervalMs) return;
+    lastSweepAt = currentTime;
+    const cutoff = currentTime - ttlMs;
+    for (const [key, entry] of states) {
+      if (entry.updatedAt < cutoff) states.delete(key);
+    }
+  }
 
   return {
     async get(key) {
-      return states.get(key) ?? emptyWorkflowState();
+      const entry = states.get(key);
+      if (!entry) return emptyWorkflowState();
+      // Per-entry expiry check — sweep is throttled, so a stale entry
+      // could otherwise be returned in the gap between sweeps.
+      if (now() - entry.updatedAt > ttlMs) {
+        states.delete(key);
+        return emptyWorkflowState();
+      }
+      return entry.value;
     },
     async patch(key, patch) {
-      const current = states.get(key) ?? emptyWorkflowState();
+      const t = now();
+      sweep(t);
+      const prev = states.get(key);
+      const baseValue = prev && t - prev.updatedAt <= ttlMs
+        ? prev.value
+        : emptyWorkflowState();
       const next: WorkflowState = {
-        ...current,
+        ...baseValue,
         ...patch,
         orientationVersion: 1,
       };
-      states.set(key, next);
+      states.set(key, { value: next, updatedAt: t });
       return next;
+    },
+    size(): number {
+      return states.size;
     },
   };
 }
