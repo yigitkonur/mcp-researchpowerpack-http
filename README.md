@@ -8,11 +8,10 @@ Built on [mcp-use](https://github.com/nicepkg/mcp-use). No stdio, HTTP only.
 
 | tool | what it does | needs |
 |------|-------------|-------|
-| `start-research` | one-time orientation step that unlocks the research workflow for the current conversation/session | none |
-| `web-search` | parallel Google search across 1–100 queries with URL aggregation, signals, and follow-up suggestions | `SERPER_API_KEY` |
-| `search-reddit` | Reddit-focused search across 1–100 queries | `SERPER_API_KEY` |
-| `get-reddit-post` | fetch 1–100 Reddit posts with full comment trees | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` |
-| `scrape-links` | scrape 1–100 URLs with optional LLM extraction | `SCRAPEDO_API_KEY` |
+| `start-research` | one-time orientation step that unlocks the research workflow for the current conversation/session. Emits the companion `run-research` skill install hint on every boot. | none |
+| `web-search` | parallel Google search across 1–100 queries with URL aggregation, hostname-heuristic `source_type` tagging, and follow-up suggestions. `scope: "reddit"` filters to post permalinks (subreddit homepages dropped). `verbose: true` restores per-row metadata + Signals block. | `SERPER_API_KEY` |
+| `get-reddit-post` | fetch 1–100 Reddit posts with full comment trees. Returns `isError: true` when every URL fails. | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` |
+| `scrape-links` | scrape 1–100 URLs with optional LLM extraction. HTML chrome stripped server-side via Readability. Reddit URLs are rejected with `UNSUPPORTED_URL_TYPE` — use `get-reddit-post`. | `SCRAPEDO_API_KEY` |
 
 Also exposes `/health`, `health://status`, and two optional MCP prompts: `deep-research` and `reddit-sentiment`.
 
@@ -22,22 +21,27 @@ Call `start-research` once at the beginning of each conversation/session.
 
 It returns the orientation brief that teaches how to route between:
 
-- `web-search`
-- `search-reddit`
+- `web-search` (with `scope: "web" | "reddit" | "both"`)
 - `get-reddit-post`
 - `scrape-links`
 
-All four research tools are gated until that orientation step has happened for the current workflow key.
+All three gated tools advertise this precondition via `_meta.requires: ["start-research"]` in `tools/list`, so capability-aware clients can skip pre-bootstrap calls.
+
+Pair the server with the [`run-research`](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/run-research) skill for the full agentic playbook:
+
+```bash
+npx -y skills add -y -g yigitkonur/skills-by-yigitkonur/skills/run-research
+```
 
 ## quickstart
 
 ```bash
 # from npm
-HOST=127.0.0.1 PORT=3000 npx -y mcp-researchpowerpack-http
+HOST=127.0.0.1 PORT=3000 npx -y mcp-researchpowerpack
 
 # from source
-git clone https://github.com/yigitkonur/mcp-researchpowerpack-http.git
-cd mcp-researchpowerpack-http
+git clone https://github.com/yigitkonur/mcp-researchpowerpack.git
+cd mcp-researchpowerpack
 pnpm install && pnpm dev
 ```
 
@@ -71,7 +75,7 @@ Copy `.env.example`, set only what you need. Missing keys don't crash the server
 
 | var | enables |
 |-----|---------|
-| `SERPER_API_KEY` | `web-search`, `search-reddit` |
+| `SERPER_API_KEY` | `web-search` (open web + `scope: "reddit"`) |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | `get-reddit-post` |
 | `SCRAPEDO_API_KEY` | `scrape-links` |
 | `LLM_API_KEY` | AI extraction, search classification, and raw-mode refine suggestions |
@@ -138,7 +142,7 @@ src/
     registry.ts          registerAllTools() — wires tools to MCP server
     start-research.ts    workflow orientation entrypoint
     search.ts            web-search handler
-    reddit.ts            search-reddit + get-reddit-post
+    reddit.ts            get-reddit-post
     scrape.ts            scrape-links handler
     mcp-helpers.ts       response builders (markdown + structured MCP output)
     utils.ts             shared formatters, token budget allocation

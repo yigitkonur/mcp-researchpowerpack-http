@@ -1,10 +1,11 @@
 {
-  "name": "mcp-researchpowerpack-http",
-  "version": "4.2.5",
-  "description": "The ultimate research MCP toolkit: Reddit mining, web search with CTR aggregation, and intelligent web scraping - all in one modular package",
+  "name": "mcp-researchpowerpack",
+  "version": "4.3.0",
+  "description": "HTTP-first MCP research server: web-search (with Reddit scope), scrape-links (chrome-stripped), get-reddit-post — built on mcp-use, deployed at research.yigitkonur.com/mcp.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "mcp-researchpowerpack": "dist/index.js",
     "mcp-researchpowerpack-http": "dist/index.js",
     "mcp-research-powerpack-http": "dist/index.js"
   },
@@ -45,11 +46,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yigitkonur/mcp-researchpowerpack-http.git"
+    "url": "git+https://github.com/yigitkonur/mcp-researchpowerpack.git"
   },
-  "homepage": "https://github.com/yigitkonur/mcp-researchpowerpack-http#readme",
+  "homepage": "https://github.com/yigitkonur/mcp-researchpowerpack#readme",
   "bugs": {
-    "url": "https://github.com/yigitkonur/mcp-researchpowerpack-http/issues"
+    "url": "https://github.com/yigitkonur/mcp-researchpowerpack/issues"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The live server runs at https://research.yigitkonur.com/mcp — every push to
+`main` deploys automatically.
+
+## [4.3.0] - 2026-04-18
+
+The "tighten the contract, sharpen the tools, surface the skill" release.
+**Tool count drops from 5 → 4. Token cost per call drops 30–60% on most paths.**
+Pair the server with the [`run-research`](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/run-research) skill for the full agentic playbook.
+
+### Renamed
+
+- **Package: `mcp-researchpowerpack-http` → `mcp-researchpowerpack`.** The HTTP suffix was redundant — this server has only ever been HTTP. Legacy bin names (`mcp-researchpowerpack-http`, `mcp-research-powerpack-http`) still work, so existing `npx` commands keep functioning. The npm package `mcp-researchpowerpack-http` is frozen at 4.2.5 and superseded by this one.
+- **GitHub repo: `mcp-researchpowerpack-http` → `mcp-researchpowerpack`.** GitHub auto-redirects the old URL.
+- **Manufact deployment binding** updated to the new repo. The live URL `research.yigitkonur.com/mcp` is unchanged — no client config update required.
+
+### Removed
+
+- **`search-reddit` tool deleted.** Reddit discovery now flows through `web-search` with `scope: "reddit"`. Drops a tool that leaked subreddit-homepage URLs and unrelated namesake hits (a "Portkey" query was returning Harry Potter results). Server-side filtering means cleaner results without client-side regex juggling.
+- **Cookie-cutter `Next Steps:` footers** with literal `[...]` placeholders (e.g. `→ web-search(queries=[...], extract="verify scraped content")`) are gone from `scrape-links` and `get-reddit-post`. They were anti-guidance — agents copy-pasted malformed tool calls from them.
+
+### Added
+
+- **`web-search` `scope` parameter** — `"web"` (default), `"reddit"`, or `"both"`. The reddit scope appends `site:reddit.com` server-side and filters results to `/r/.+/comments/[a-z0-9]+/` permalinks. The both scope runs each query twice and merges. Subreddit homepages and `/rising` / `/new` listings are dropped at the source.
+- **`web-search` `verbose` parameter** — opt back into per-row metadata (`Score | Seen in | Best pos | Consistency`), the `CONSENSUS` label, and the trailing Signals block. Default off because these were noise on a typical 3-query call (every row was labeled CONSENSUS, every row showed `Consistency: n/a`, ~1.5KB of zero-signal chrome).
+- **`web-search` per-result `source_type`** in `structuredContent.results[]` — hostname/path heuristic into one of `reddit | github | docs | blog | paper | qa | cve | news | video | web`. Always present, even when the LLM classifier is offline. When the classifier is online its tag wins.
+- **`start-research` `include_playbook` parameter** — force the full ~1100-token playbook even when the planner is offline. Default `false`, which means the server emits a compact ~280-token stub when the planner can't be reached. Saves ~800 tokens per session-boot in the steady state.
+- **`run-research` skill install hint** rendered on every `start-research` call. The MCP server is the toolbelt; the skill is the discipline. Install with: `npx -y skills add -y -g yigitkonur/skills-by-yigitkonur/skills/run-research`.
+- **HTML chrome stripping** in `scrape-links` via Mozilla Readability over jsdom. Cookie banners, nav, footer, and related-article lists are dropped before HTML→Markdown conversion. Same pipeline runs whether the LLM extractor is online or not.
+- **LLM health on `health://status`** — `llm_planner_ok`, `llm_extractor_ok`, `llm_planner_checked_at`, `llm_extractor_checked_at`, `llm_planner_error`, `llm_extractor_error`, `planner_configured`, `extractor_configured`. Capability-aware clients can read this once at session start instead of parsing per-call footers. Plus `workflow_state_size` for in-memory store visibility.
+- **Initialize-time `experimental.research_powerpack` capability** — `planner_available`, `extractor_available`, `planner_model`, `extractor_model`, `requires_bootstrap: ["web-search", "scrape-links", "get-reddit-post"]`. Surfaces via the standard MCP `experimental` escape hatch on every per-session native server.
+- **`_meta.requires: ["start-research"]`** on every gated tool's `tools/list` entry. Capability-aware clients can skip pre-bootstrap calls instead of discovering the gate by hitting it.
+- **`ctx.log()` warnings** on every LLM-fallback path (`llm_planner_unreachable`, `llm_classifier_unreachable`, `llm_extractor_unreachable`). Clients can render degraded mode once at the first signal.
+- **`AGENTS.md`** — process standard for AI agents working on this repo. Pre-push verification chain, post-push live verification with the `test-by-mcpc-cli` skill, acceptance criteria table, don'ts list.
+- **`docs/code-review/context/`** — seven grounding documents (architecture map, current tool surface with probe numbers, LLM degradation paths, session/workflow state, output formatting patterns, mcp-use best practices, derailment evidence) committed alongside the implementation.
+
+### Changed
+
+- **`get-reddit-post` returns `isError: true`** when every URL in the batch fails. Previously returned `isError: false` with `Successful: 0` in the body, requiring callers to text-scrape to detect failure. Same fix for `scrape-links`. Partial success still resolves with `isError: false`.
+- **`scrape-links` rejects Reddit URLs** with `UNSUPPORTED_URL_TYPE` and points at `get-reddit-post`. Whole-batch rejection rather than partial routing — silent partial routing was the worst of both worlds.
+- **`start-research` scaffolding** is honest about LLM availability. When the planner is offline, the loop step that would promise `synthesis`, `gaps`, and `refine_queries` is replaced with a synthesize-from-raw-URLs instruction. Agents no longer waste a turn looking for fields that won't arrive.
+- **`scrape-links` batch header** is honest about LLM accounting. Reports `LLM extraction: ok/total succeeded`; when zero URLs extracted but the LLM was attempted, explicitly notes `LLM credit: 0 charged (no extraction produced)`.
+- **In-memory workflow store** now enforces a 24h TTL matching the Redis store. Sweep runs at most once per 60s on `patch()`; `get()` also performs a per-entry expiry check. Closes the unbound-cache leak that produced 521 active sessions at 31h uptime.
+- **`reddit-keyword-guard`** message updated to point at `web-search` `scope: "reddit"` instead of the deleted `search-reddit`. The guard is bypassed when scope is `reddit` or `both` (intentional Reddit context, not a tool-choice mistake).
+
+### Fixed
+
+- **MCP-spec contract violation** — `isError` on zero-success batches.
+- **`InMemoryWorkflowStateStore` leak** — see "Changed" above.
+
+### Migration notes
+
+- **MCP URL is unchanged** (`https://research.yigitkonur.com/mcp`). Most users need no action.
+- **If you were calling `search-reddit`**, switch to `web-search` with `scope: "reddit"`. Same result quality, no subreddit-homepage noise.
+- **If you were checking `Successful: 0` text from `get-reddit-post`** to detect failure, switch to checking `response.isError` — it now flips correctly.
+- **If you were passing Reddit URLs to `scrape-links`**, you'll now get an `UNSUPPORTED_URL_TYPE` error. Switch those calls to `get-reddit-post`.
+- **If you embed the package**, re-install with `npm i mcp-researchpowerpack`. The CLI bin names (`mcp-researchpowerpack-http`, `mcp-research-powerpack-http`) are kept as back-compat aliases.
+
+## [4.2.1] – [4.2.5] - 2026-04-15 to 2026-04-17
+
+CI auto-bumped releases between 4.2.0 and 4.3.0. Last release of the
+`mcp-researchpowerpack-http` npm name; functionally identical to 4.3.0
+above except for the rename. Subsequent versions ship as
+**mcp-researchpowerpack** (no `-http` suffix).
+
 ## [4.2.0] - 2026-04-15
 
 ### Added
