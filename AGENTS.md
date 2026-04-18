@@ -4,16 +4,18 @@ Operating standard for AI agents working on this repository. Read first, every s
 
 ## What this repo is
 
-`mcp-researchpowerpack-http` — an HTTP-first MCP server built on `mcp-use` exposing 4 research tools: `web-search`, `scrape-links`, `get-reddit-post`, and `start-research` (bootstrap gate). ES-module TypeScript, deployed to https://research.yigitkonur.com/mcp.
+`mcp-researchpowerpack` (formerly `mcp-researchpowerpack-http` — HTTP suffix dropped in v4.3.0) — an HTTP-first MCP server built on `mcp-use` exposing 4 research tools: `web-search`, `scrape-links`, `get-reddit-post`, and `start-research` (bootstrap gate). ES-module TypeScript, deployed to https://research.yigitkonur.com/mcp.
 
-`CLAUDE.md` carries the full architecture map and command list. Read it for code-level work. This file is the **process** standard — what to do, in what order, with what verification.
+`CLAUDE.md` carries the full architecture map and command list. Read it for code-level work. `CHANGELOG.md` carries the user-facing release notes. This file is the **process** standard — what to do, in what order, with what verification.
 
 ## Branch + deploy contract
 
-- Every push to `main` triggers an auto-deploy to `research.yigitkonur.com/mcp`. There is no staging.
-- Long-running feature work happens on a branch in a worktree at `/Users/yigitkonur/dev/mcp-researchpowerpack-http-revisions/`.
+- Every push to `main` *should* trigger an auto-deploy to `research.yigitkonur.com/mcp`, but the GitHub-webhook→Manufact path is not 100% reliable (it was observed silent during the v4.3.0 rename). After every push, verify the live `health://status.version` matches `package.json.version`. If not, run `pnpm dlx mcp-use deploy --org primary-2e5b3ad6 -y` to force a deploy.
+- The "Publish to npm" GitHub Action is independent of Manufact and ships the package to https://www.npmjs.com/package/mcp-researchpowerpack — that's a separate success surface, do not conflate it with the live deploy being current.
+- Long-running feature work happens on a branch in a worktree at `/Users/yigitkonur/dev/mcp-researchpowerpack-http-revisions/` (worktree path predates the repo rename — kept as-is).
 - Never push to `main` without first running the verification chain in §"Before you push".
 - Never push with `--no-verify`, `--force`, or `--no-gpg-sign` unless the user explicitly says so.
+- `.mcp-use/project.json` is `.gitignore`d but the file gets rewritten by `mcp-use deploy`. If a deploy fails with "uncommitted changes", run `git update-index --skip-worktree .mcp-use/project.json` once and retry.
 
 ## Before you push
 
