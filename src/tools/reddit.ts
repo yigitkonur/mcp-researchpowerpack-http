@@ -354,6 +354,15 @@ export async function handleGetRedditPosts(
     );
 
     const executionTime = Date.now() - startTime;
+
+    // Contract: zero successful posts in a non-empty batch → isError:true so
+    // callers that check response.isError can short-circuit. Partial success
+    // still resolves through toolSuccess so the agent sees both rows. See
+    // docs/code-review/context/02-current-tool-surface.md (E6).
+    if (processResult.successful === 0 && processResult.failed > 0) {
+      return toolFailure(content);
+    }
+
     return toolSuccess(content, {
       content,
       metadata: {

@@ -30,6 +30,86 @@ const LLM_STALL_TIMEOUT_MS = 15_000 as const;
 /** Hard request deadline for LLM calls */
 const LLM_REQUEST_DEADLINE_MS = 30_000 as const;
 
+// ============================================================================
+// LLM health tracking — surfaced via health://status so capability-aware
+// clients can branch on degraded mode without parsing per-call footers.
+// ============================================================================
+
+type LLMHealthKind = 'planner' | 'extractor';
+
+interface LLMHealthSnapshot {
+  readonly lastPlannerOk: boolean;
+  readonly lastExtractorOk: boolean;
+  readonly lastPlannerCheckedAt: string | null;
+  readonly lastExtractorCheckedAt: string | null;
+  readonly lastPlannerError: string | null;
+  readonly lastExtractorError: string | null;
+  readonly plannerConfigured: boolean;
+  readonly extractorConfigured: boolean;
+}
+
+const llmHealth = {
+  lastPlannerOk: false,
+  lastExtractorOk: false,
+  lastPlannerCheckedAt: null as string | null,
+  lastExtractorCheckedAt: null as string | null,
+  lastPlannerError: null as string | null,
+  lastExtractorError: null as string | null,
+};
+
+export function markLLMSuccess(kind: LLMHealthKind): void {
+  const ts = new Date().toISOString();
+  if (kind === 'planner') {
+    llmHealth.lastPlannerOk = true;
+    llmHealth.lastPlannerCheckedAt = ts;
+    llmHealth.lastPlannerError = null;
+  } else {
+    llmHealth.lastExtractorOk = true;
+    llmHealth.lastExtractorCheckedAt = ts;
+    llmHealth.lastExtractorError = null;
+  }
+}
+
+export function markLLMFailure(kind: LLMHealthKind, err: unknown): void {
+  const ts = new Date().toISOString();
+  const message = err instanceof Error ? err.message : String(err ?? 'unknown error');
+  if (kind === 'planner') {
+    llmHealth.lastPlannerOk = false;
+    llmHealth.lastPlannerCheckedAt = ts;
+    llmHealth.lastPlannerError = message;
+  } else {
+    llmHealth.lastExtractorOk = false;
+    llmHealth.lastExtractorCheckedAt = ts;
+    llmHealth.lastExtractorError = message;
+  }
+}
+
+export function getLLMHealth(): LLMHealthSnapshot {
+  const cap = getCapabilities();
+  return {
+    lastPlannerOk: llmHealth.lastPlannerOk,
+    lastExtractorOk: llmHealth.lastExtractorOk,
+    lastPlannerCheckedAt: llmHealth.lastPlannerCheckedAt,
+    lastExtractorCheckedAt: llmHealth.lastExtractorCheckedAt,
+    lastPlannerError: llmHealth.lastPlannerError,
+    lastExtractorError: llmHealth.lastExtractorError,
+    // Static capability — based on env presence at boot. Runtime health (above)
+    // tells whether the last attempt actually succeeded.
+    plannerConfigured: cap.llmExtraction,
+    extractorConfigured: cap.llmExtraction,
+  };
+}
+
+/** Test-only — reset state between tests. Not exported from index. */
+export function _resetLLMHealthForTests(): void {
+  llmHealth.lastPlannerOk = false;
+  llmHealth.lastExtractorOk = false;
+  llmHealth.lastPlannerCheckedAt = null;
+  llmHealth.lastExtractorCheckedAt = null;
+  llmHealth.lastPlannerError = null;
+  llmHealth.lastExtractorError = null;
+}
+
 interface ProcessingConfig {
   readonly enabled: boolean;
   readonly extract: string | undefined;
@@ -347,11 +427,13 @@ ${truncatedContent}`;
 
       if (response.content) {
         mcpLog('info', `Successfully extracted ${response.content.length} characters`, 'llm');
+        markLLMSuccess('extractor');
         return { content: response.content, processed: true };
       }
 
       // Empty response - not retryable
       mcpLog('warning', 'Received empty response from LLM', 'llm');
+      markLLMFailure('extractor', 'LLM returned empty response');
       return {
         content,
         processed: false,
@@ -389,6 +471,7 @@ ${truncatedContent}`;
   // All attempts failed - return original content with error info
   const errorMessage = lastError?.message || 'Unknown LLM error';
   mcpLog('error', `All attempts failed: ${errorMessage}. Returning original content.`, 'llm');
+  markLLMFailure('extractor', errorMessage);
 
   return {
     content, // Return original content as fallback
@@ -565,7 +648,9 @@ ${lines.join('\n')}`;
     );
 
     if (!response.content) {
-      return { result: null, error: response.error ?? 'LLM returned empty classification response' };
+      const errMsg = response.error ?? 'LLM returned empty classification response';
+      markLLMFailure('planner', errMsg);
+      return { result: null, error: errMsg };
     }
 
     // Strip markdown code fences if present
@@ -576,14 +661,18 @@ ${lines.join('\n')}`;
     // Note: synthesis is typed not truthy — the prompt explicitly instructs an empty string
     // for the all-OTHER case, and we must not reject that.
     if (!parsed.title || typeof parsed.synthesis !== 'string' || !Array.isArray(parsed.results)) {
-      return { result: null, error: 'LLM response missing required fields (title, synthesis, results)' };
+      const errMsg = 'LLM response missing required fields (title, synthesis, results)';
+      markLLMFailure('planner', errMsg);
+      return { result: null, error: errMsg };
     }
 
     mcpLog('info', `Classification complete: ${parsed.results.filter(r => r.tier === 'HIGHLY_RELEVANT').length} highly relevant`, 'llm');
+    markLLMSuccess('planner');
     return { result: parsed };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     mcpLog('error', `Classification failed: ${message}`, 'llm');
+    markLLMFailure('planner', message);
     return { result: null, error: `Classification failed: ${message}` };
   }
 }
@@ -642,16 +731,20 @@ RULES:
     );
 
     if (!response.content) {
-      return { result: [], error: response.error ?? 'LLM returned empty raw-mode refine query response' };
+      const errMsg = response.error ?? 'LLM returned empty raw-mode refine query response';
+      markLLMFailure('planner', errMsg);
+      return { result: [], error: errMsg };
     }
 
     const cleaned = response.content.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
     const parsed = JSON.parse(cleaned) as { refine_queries?: RefineQuerySuggestion[] };
 
+    markLLMSuccess('planner');
     return { result: Array.isArray(parsed.refine_queries) ? parsed.refine_queries : [] };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     mcpLog('error', `Raw-mode refine query generation failed: ${message}`, 'llm');
+    markLLMFailure('planner', message);
     return { result: [], error: message };
   }
 }
@@ -788,19 +881,23 @@ Rules:
 
     if (!response.content) {
       mcpLog('warning', `Research brief generation returned no content: ${response.error ?? 'unknown'}`, 'llm');
+      markLLMFailure('planner', response.error ?? 'empty response');
       return null;
     }
 
     const brief = parseResearchBrief(response.content);
     if (!brief) {
       mcpLog('warning', 'Research brief JSON parse or shape validation failed', 'llm');
+      markLLMFailure('planner', 'brief parse/validation failed');
       return null;
     }
 
+    markLLMSuccess('planner');
     return brief;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     mcpLog('warning', `Research brief generation failed: ${message}`, 'llm');
+    markLLMFailure('planner', message);
     return null;
   }
 }
