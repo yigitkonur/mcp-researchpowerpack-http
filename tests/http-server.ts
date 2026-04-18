@@ -413,6 +413,34 @@ async function main(): Promise<void> {
     assert.ok(resourceJson.result, 'expected resources/read result');
     assert.ok(JSON.stringify(resourceJson).includes('health://status'));
 
+    // contract-fixes/02: health://status surfaces LLM augmentation health so
+    // capability-aware clients can branch at session start instead of parsing
+    // per-call footers.
+    const resourceText = JSON.stringify(resourceJson);
+    for (const field of [
+      'llm_planner_ok',
+      'llm_extractor_ok',
+      'planner_configured',
+      'extractor_configured',
+    ]) {
+      assert.ok(resourceText.includes(field), `expected health://status to include "${field}"`);
+    }
+
+    // /health HTTP endpoint surfaces the same fields for load-balancer probes.
+    const healthFields = await fetch(`${baseUrl}/health`).then((r) => r.json());
+    assert.equal(typeof healthFields.llm_planner_ok, 'boolean');
+    assert.equal(typeof healthFields.llm_extractor_ok, 'boolean');
+    assert.equal(typeof healthFields.planner_configured, 'boolean');
+    assert.equal(typeof healthFields.extractor_configured, 'boolean');
+
+    // contract-fixes/02: experimental.research_powerpack capability advertised
+    // on initialize so capability-aware clients see it without calling tools.
+    const initText = JSON.stringify(initializeJson);
+    assert.ok(
+      initText.includes('research_powerpack'),
+      'expected initialize.capabilities.experimental.research_powerpack',
+    );
+
     const capabilityResponse = await postJsonRpc(
       baseUrl,
       {

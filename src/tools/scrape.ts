@@ -356,6 +356,15 @@ export async function handleScrapeLinks(
     llmErrors,
     executionTime,
   );
+
+  // Contract: every URL failed → return isError: true so callers that check
+  // response.isError can short-circuit. Partial success still resolves
+  // through toolSuccess so the agent sees both rows. See
+  // docs/code-review/context/02-current-tool-surface.md (E6).
+  if (metrics.successful === 0 && metrics.failed > 0) {
+    return toolFailure(result.content);
+  }
+
   return toolSuccess(result.content, result.structuredContent);
 }
 

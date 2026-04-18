@@ -18,6 +18,7 @@ import {
 import { createClient, type RedisClientType } from 'redis';
 
 import { SERVER } from './src/config/index.js';
+import { getLLMHealth } from './src/services/llm-processor.js';
 import {
   closeWorkflowStateStore,
   configureWorkflowStateStore,
@@ -171,6 +172,7 @@ async function buildSessionConfig(): Promise<{
 }
 
 function buildHealthPayload(server: MCPServer, startedAt: number) {
+  const llm = getLLMHealth();
   return {
     status: 'ok',
     name: SERVER.NAME,
@@ -178,6 +180,16 @@ function buildHealthPayload(server: MCPServer, startedAt: number) {
     transport: 'http',
     uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
     active_sessions: server.getActiveSessions().length,
+    // LLM health — surfaced so capability-aware clients render degraded mode
+    // once at session start instead of parsing per-call footers.
+    llm_planner_ok: llm.lastPlannerOk,
+    llm_extractor_ok: llm.lastExtractorOk,
+    llm_planner_checked_at: llm.lastPlannerCheckedAt,
+    llm_extractor_checked_at: llm.lastExtractorCheckedAt,
+    llm_planner_error: llm.lastPlannerError,
+    llm_extractor_error: llm.lastExtractorError,
+    planner_configured: llm.plannerConfigured,
+    extractor_configured: llm.extractorConfigured,
     timestamp: new Date().toISOString(),
   };
 }
@@ -229,6 +241,47 @@ async function main(): Promise<void> {
   });
 
   registerAllTools(server);
+
+  // Advertise our LLM-augmentation capability via the MCP `experimental`
+  // namespace so capability-aware clients can branch at initialize-time
+  // instead of parsing per-call footers. mcp-use creates a fresh native MCP
+  // server per session via `getServerForSession()`, so we patch that factory
+  // to register our experimental capability on every session. The capability
+  // values are read fresh on each session so health flips are observable.
+  // See: docs/code-review/context/06-mcp-use-best-practices-primer.md (#3, #6).
+  try {
+    type Native = { server?: { registerCapabilities?: (caps: Record<string, unknown>) => void } };
+    type Patched = { getServerForSession?: (sessionId?: string) => Native };
+    const patched = server as unknown as Patched;
+    const original = patched.getServerForSession?.bind(server);
+    if (original) {
+      patched.getServerForSession = (sessionId?: string): Native => {
+        const native = original(sessionId);
+        try {
+          const llm = getLLMHealth();
+          native.server?.registerCapabilities?.({
+            experimental: {
+              research_powerpack: {
+                planner_available: llm.plannerConfigured,
+                extractor_available: llm.extractorConfigured,
+                planner_model:
+                  process.env.LLM_MODEL ?? process.env.LLM_EXTRACTION_MODEL ?? null,
+                extractor_model:
+                  process.env.LLM_MODEL ?? process.env.LLM_EXTRACTION_MODEL ?? null,
+                // Tools that require start-research to bootstrap the session first.
+                requires_bootstrap: ['web-search', 'scrape-links', 'get-reddit-post'],
+              },
+            },
+          });
+        } catch {
+          // Capability registration is advisory; never block session creation.
+        }
+        return native;
+      };
+    }
+  } catch (err) {
+    startupLogger.warn(`Could not patch session-server factory: ${String(err)}`);
+  }
 
   const startedAt = Date.now();
 
