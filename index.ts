@@ -137,6 +137,12 @@ function buildSessionConfig(): {
 
 function buildHealthPayload(server: MCPServer, startedAt: number) {
   const llm = getLLMHealth();
+  // Distinguish "never probed" (checkedAt === null) from "probed and failed"
+  // (checkedAt set, ok=false). The raw `lastPlannerOk` defaults to `false`
+  // at startup, which would mislead operators into thinking the LLM is
+  // broken before it has been exercised once.
+  const plannerOkForHealth = llm.lastPlannerCheckedAt === null ? null : llm.lastPlannerOk;
+  const extractorOkForHealth = llm.lastExtractorCheckedAt === null ? null : llm.lastExtractorOk;
   return {
     status: 'ok',
     name: SERVER.NAME,
@@ -144,14 +150,18 @@ function buildHealthPayload(server: MCPServer, startedAt: number) {
     transport: 'http',
     uptime_seconds: Math.floor((Date.now() - startedAt) / 1000),
     active_sessions: server.getActiveSessions().length,
-    llm_planner_ok: llm.lastPlannerOk,
-    llm_extractor_ok: llm.lastExtractorOk,
+    llm_planner_ok: plannerOkForHealth,
+    llm_extractor_ok: extractorOkForHealth,
     llm_planner_checked_at: llm.lastPlannerCheckedAt,
     llm_extractor_checked_at: llm.lastExtractorCheckedAt,
     llm_planner_error: llm.lastPlannerError,
     llm_extractor_error: llm.lastExtractorError,
     planner_configured: llm.plannerConfigured,
     extractor_configured: llm.extractorConfigured,
+    // Counter surfacing lets operators diagnose gate behavior from outside
+    // the process (see src/tools/start-research.ts for the gate semantics).
+    consecutive_planner_failures: llm.consecutivePlannerFailures,
+    consecutive_extractor_failures: llm.consecutiveExtractorFailures,
     timestamp: new Date().toISOString(),
   };
 }

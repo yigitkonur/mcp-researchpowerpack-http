@@ -420,16 +420,32 @@ async function main(): Promise<void> {
       'llm_extractor_ok',
       'planner_configured',
       'extractor_configured',
+      'consecutive_planner_failures',
+      'consecutive_extractor_failures',
     ]) {
       assert.ok(resourceText.includes(field), `expected health://status to include "${field}"`);
     }
 
     // /health HTTP endpoint surfaces the same fields for load-balancer probes.
     const healthFields = await fetch(`${baseUrl}/health`).then((r) => r.json());
-    assert.equal(typeof healthFields.llm_planner_ok, 'boolean');
-    assert.equal(typeof healthFields.llm_extractor_ok, 'boolean');
+    // *_ok is `boolean | null` — null means "never probed" (initial state);
+    // `false` means "probed and the last attempt failed".
+    const isBoolOrNull = (v: unknown): boolean => typeof v === 'boolean' || v === null;
+    assert.ok(isBoolOrNull(healthFields.llm_planner_ok), 'llm_planner_ok must be boolean|null');
+    assert.ok(isBoolOrNull(healthFields.llm_extractor_ok), 'llm_extractor_ok must be boolean|null');
     assert.equal(typeof healthFields.planner_configured, 'boolean');
     assert.equal(typeof healthFields.extractor_configured, 'boolean');
+    // Counters must be non-negative integers; they back the gate in start-research.
+    assert.ok(
+      Number.isInteger(healthFields.consecutive_planner_failures) &&
+        healthFields.consecutive_planner_failures >= 0,
+      'consecutive_planner_failures must be a non-negative integer',
+    );
+    assert.ok(
+      Number.isInteger(healthFields.consecutive_extractor_failures) &&
+        healthFields.consecutive_extractor_failures >= 0,
+      'consecutive_extractor_failures must be a non-negative integer',
+    );
 
     // contract-fixes/02: experimental.research_powerpack capability advertised
     // on initialize so capability-aware clients see it without calling tools.
