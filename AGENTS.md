@@ -98,7 +98,7 @@ src/
 
 ## LLM configuration
 
-All three of `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` are required together when LLM is enabled. No legacy aliases (`LLM_EXTRACTION_*`, `OPENROUTER_*`) — these were removed in v6. `reasoning_effort` is always `'low'` and is not configurable via env.
+All three of `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` are required together when LLM is enabled. No legacy alias fallbacks — these were removed in v6. `reasoning_effort` is always `'low'` and is not configurable via env.
 
 | Var | Required | Notes |
 |-----|----------|-------|
@@ -204,7 +204,7 @@ npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --ski
 
 - Do not add new tools without explicit user direction.
 - Do not re-add `get-reddit-post` or `search-reddit`. Reddit discovery in `scrape-links` (scope + URL routing) is the contract.
-- Do not add legacy env var aliases (`LLM_EXTRACTION_*`, `OPENROUTER_*`) — they were intentionally removed in v6.
+- Do not add legacy env-var alias fallbacks. `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` are read directly — that's the contract.
 - Do not set `reasoning_effort` from env — it is hardcoded to `'low'`.
 - Do not pass Reddit URLs to `scrape-links` as "unsupported" — v6 handles them.
 - Do not assume in-memory state survives a deploy. The `InMemoryWorkflowStateStore` has a 24h TTL; Redis is the only durable store.

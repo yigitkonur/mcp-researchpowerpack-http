@@ -60,7 +60,7 @@ The server registers **5 tools**. `start-research` is the only one that bypasses
 - **Schema (key params):** `urls: string[]` (Reddit post permalinks).
 - **Advertised behavior:** Extract Reddit post + top comments as structured Markdown.
 - **Actually observed:**
-  - Good URL → 3020 chars. Banner at top: `⚠️ LLM unavailable (LLM_EXTRACTION_API_KEY not set) — raw content returned`. Next Steps: `→ web-search(queries=[...], extract="verify claims from Reddit") — cross-check Reddit findings` and `→ scrape-links(urls=[...URLs from comments...], extract="...") — scrape URLs referenced in comments`.
+  - Good URL → 3020 chars. Banner at top: `⚠️ LLM unavailable (LLM_API_KEY not set) — raw content returned`. Next Steps: `→ web-search(queries=[...], extract="verify claims from Reddit") — cross-check Reddit findings` and `→ scrape-links(urls=[...URLs from comments...], extract="...") — scrape URLs referenced in comments`.
   - Bad URL (e.g. `https://example.com/not-reddit` or `https://reddit.com/r/nonexistent/comments/aaaaaa/fake/`) → body shows `Successful: 0 / Failed: 1` but `isError: None` (i.e. `false`). **MCP contract violation**: total failure must set `isError: true`.
   - For contrast, `scrape-links` with `not-a-url` correctly returns `isError: true` with an input-validation error. The `isError` bug is specific to `get-reddit-post` body-level failure, not input validation.
 - **Ship gap:** `isError` contract violation on all-bad batches; Next Steps placeholders are non-actionable.

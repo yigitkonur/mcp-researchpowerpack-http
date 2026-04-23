@@ -235,10 +235,8 @@ async function main(): Promise<void> {
               research_powerpack: {
                 planner_available: llm.plannerConfigured,
                 extractor_available: llm.extractorConfigured,
-                planner_model:
-                  process.env.LLM_MODEL ?? process.env.LLM_EXTRACTION_MODEL ?? null,
-                extractor_model:
-                  process.env.LLM_MODEL ?? process.env.LLM_EXTRACTION_MODEL ?? null,
+                planner_model: process.env.LLM_MODEL ?? null,
+                extractor_model: process.env.LLM_MODEL ?? null,
               },
             },
           });

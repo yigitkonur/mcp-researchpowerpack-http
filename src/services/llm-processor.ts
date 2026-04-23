@@ -17,20 +17,27 @@ import {
 } from '../utils/errors.js';
 import { mcpLog } from '../utils/logger.js';
 
-/** Maximum input characters for LLM processing (~25k tokens) */
-const MAX_LLM_INPUT_CHARS = 100_000 as const;
+/** Maximum input characters for LLM processing (~125k tokens, sized for the larger fallback model) */
+const MAX_LLM_INPUT_CHARS = 500_000 as const;
+
+/**
+ * Maximum input characters for the primary model when it has a smaller context window.
+ * Used when an input would exceed the mini model's limits so the call goes straight to fallback
+ * instead of burning retries on guaranteed context_length_exceeded errors.
+ */
+const MAX_PRIMARY_MODEL_INPUT_CHARS = 100_000 as const;
 
 /** LLM client timeout in milliseconds */
-const LLM_CLIENT_TIMEOUT_MS = 120_000 as const;
+const LLM_CLIENT_TIMEOUT_MS = 600_000 as const;
 
 /** Jitter factor for exponential backoff */
 const BACKOFF_JITTER_FACTOR = 0.3 as const;
 
 /** Stall detection timeout — abort if no response in this time */
-const LLM_STALL_TIMEOUT_MS = 15_000 as const;
+const LLM_STALL_TIMEOUT_MS = 75_000 as const;
 
 /** Hard request deadline for LLM calls */
-const LLM_REQUEST_DEADLINE_MS = 30_000 as const;
+const LLM_REQUEST_DEADLINE_MS = 150_000 as const;
 
 // ============================================================================
 // LLM health tracking — surfaced via health://status so capability-aware
@@ -286,7 +293,7 @@ function isRetryableLLMError(error: unknown): boolean {
     }
   }
 
-  // Check error codes from OpenAI/OpenRouter
+  // Check error codes from the OpenAI-compatible endpoint
   const record = error as Record<string, unknown>;
   const code = typeof record.code === 'string' ? record.code : undefined;
   const nested =
@@ -319,6 +326,42 @@ function isRetryableLLMError(error: unknown): boolean {
 }
 
 /**
+ * Detect "the prompt is too long for this model" errors.
+ * These are NOT retryable on the same model — we should skip remaining primary retries
+ * and go straight to the fallback model (which has a larger context window).
+ */
+function isContextWindowError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  const record = error as Record<string, unknown>;
+  const nested =
+    typeof record.error === 'object' && record.error !== null
+      ? (record.error as Record<string, unknown>)
+      : null;
+
+  const code = typeof record.code === 'string' ? record.code : undefined;
+  const nestedCode = nested && typeof nested.code === 'string' ? nested.code : undefined;
+  if (code === 'context_length_exceeded' || nestedCode === 'context_length_exceeded') {
+    return true;
+  }
+
+  const messages: string[] = [];
+  if (typeof record.message === 'string') messages.push(record.message);
+  if (nested && typeof nested.message === 'string') messages.push(nested.message);
+  const combined = messages.join(' ').toLowerCase();
+  return (
+    combined.includes('context length') ||
+    combined.includes('context window') ||
+    combined.includes('maximum context') ||
+    combined.includes('maximum tokens') ||
+    combined.includes('token limit') ||
+    combined.includes('too many tokens') ||
+    combined.includes('prompt is too long') ||
+    combined.includes('reduce the length')
+  );
+}
+
+/**
  * Calculate backoff delay with jitter for LLM retries
  */
 function calculateLLMBackoff(attempt: number): number {
@@ -347,7 +390,7 @@ export async function processContentWithLLM(
     return {
       content,
       processed: false,
-      error: 'LLM processor not available (LLM_EXTRACTION_API_KEY or OPENROUTER_API_KEY not set)',
+      error: 'LLM processor not available (LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL must all be set)',
       errorDetails: {
         code: ErrorCode.AUTH_ERROR,
         message: 'LLM processor not available',
@@ -360,10 +403,16 @@ export async function processContentWithLLM(
     return { content: content || '', processed: false, error: 'Empty content provided' };
   }
 
-  // Truncate extremely long content to avoid token limits
+  // Truncate extremely long content to avoid blowing past even the fallback model's context.
   const truncatedContent = content.length > MAX_LLM_INPUT_CHARS
     ? content.substring(0, MAX_LLM_INPUT_CHARS) + '\n\n[Content truncated due to length]'
     : content;
+
+  // If the prompt would exceed the primary (mini) model's smaller context window,
+  // skip it entirely and go straight to the fallback model. Saves burning retries
+  // on guaranteed context_length_exceeded errors.
+  const skipPrimaryForSize =
+    truncatedContent.length > MAX_PRIMARY_MODEL_INPUT_CHARS && !!LLM_EXTRACTION.FALLBACK_MODEL;
 
   // Sanitize URL before sending to LLM: drop query string and fragment
   // so signed URLs, session tokens, auth params, or tracking hashes never
@@ -444,52 +493,68 @@ ${truncatedContent}`;
 
   let lastError: StructuredError | undefined;
 
-  // Phase 1: primary model with up to LLM_RETRY_CONFIG.maxRetries retries
-  for (let attempt = 0; attempt <= LLM_RETRY_CONFIG.maxRetries; attempt++) {
-    try {
-      if (attempt === 0) {
-        mcpLog('info', `Starting extraction with ${LLM_EXTRACTION.MODEL}`, 'llm');
-      } else {
-        mcpLog('warning', `Retry attempt ${attempt}/${LLM_RETRY_CONFIG.maxRetries}`, 'llm');
+  // Phase 1: primary model with up to LLM_RETRY_CONFIG.maxRetries retries.
+  // Skip entirely when the input is too big for the primary's context window.
+  if (skipPrimaryForSize) {
+    mcpLog(
+      'info',
+      `Input ${truncatedContent.length} chars exceeds primary model cap (${MAX_PRIMARY_MODEL_INPUT_CHARS}); routing directly to fallback`,
+      'llm',
+    );
+  } else {
+    for (let attempt = 0; attempt <= LLM_RETRY_CONFIG.maxRetries; attempt++) {
+      try {
+        if (attempt === 0) {
+          mcpLog('info', `Starting extraction with ${LLM_EXTRACTION.MODEL}`, 'llm');
+        } else {
+          mcpLog('warning', `Retry attempt ${attempt}/${LLM_RETRY_CONFIG.maxRetries}`, 'llm');
+        }
+
+        const response = await requestText(processor, prompt, 'LLM extraction', signal);
+
+        if (response.content) {
+          mcpLog('info', `Successfully extracted ${response.content.length} characters`, 'llm');
+          markLLMSuccess('extractor');
+          return { content: response.content, processed: true };
+        }
+
+        // Empty response — not retryable
+        mcpLog('warning', 'Received empty response from LLM', 'llm');
+        markLLMFailure('extractor', 'LLM returned empty response');
+        return {
+          content,
+          processed: false,
+          error: 'LLM returned empty response',
+          errorDetails: {
+            code: ErrorCode.INTERNAL_ERROR,
+            message: 'LLM returned empty response',
+            retryable: false,
+          },
+        };
+
+      } catch (err: unknown) {
+        lastError = classifyError(err);
+        const status = hasStatus(err) ? err.status : undefined;
+        const code = typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as Record<string, unknown>).code)
+          : undefined;
+        const ctxErr = isContextWindowError(err);
+        mcpLog('error', `Error (attempt ${attempt + 1}): ${lastError.message} [status=${status}, code=${code}, retryable=${isRetryableLLMError(err)}, context_window=${ctxErr}]`, 'llm');
+
+        // Context window errors are not retryable on the same model — jump to fallback.
+        if (ctxErr) {
+          mcpLog('warning', 'Context window exceeded on primary — skipping remaining retries, routing to fallback', 'llm');
+          break;
+        }
+
+        if (isRetryableLLMError(err) && attempt < LLM_RETRY_CONFIG.maxRetries) {
+          const delayMs = calculateLLMBackoff(attempt);
+          mcpLog('warning', `Retrying in ${delayMs}ms...`, 'llm');
+          try { await sleep(delayMs, signal); } catch { break; }
+          continue;
+        }
+        break;
       }
-
-      const response = await requestText(processor, prompt, 'LLM extraction', signal);
-
-      if (response.content) {
-        mcpLog('info', `Successfully extracted ${response.content.length} characters`, 'llm');
-        markLLMSuccess('extractor');
-        return { content: response.content, processed: true };
-      }
-
-      // Empty response — not retryable
-      mcpLog('warning', 'Received empty response from LLM', 'llm');
-      markLLMFailure('extractor', 'LLM returned empty response');
-      return {
-        content,
-        processed: false,
-        error: 'LLM returned empty response',
-        errorDetails: {
-          code: ErrorCode.INTERNAL_ERROR,
-          message: 'LLM returned empty response',
-          retryable: false,
-        },
-      };
-
-    } catch (err: unknown) {
-      lastError = classifyError(err);
-      const status = hasStatus(err) ? err.status : undefined;
-      const code = typeof err === 'object' && err !== null && 'code' in err
-        ? String((err as Record<string, unknown>).code)
-        : undefined;
-      mcpLog('error', `Error (attempt ${attempt + 1}): ${lastError.message} [status=${status}, code=${code}, retryable=${isRetryableLLMError(err)}]`, 'llm');
-
-      if (isRetryableLLMError(err) && attempt < LLM_RETRY_CONFIG.maxRetries) {
-        const delayMs = calculateLLMBackoff(attempt);
-        mcpLog('warning', `Retrying in ${delayMs}ms...`, 'llm');
-        try { await sleep(delayMs, signal); } catch { break; }
-        continue;
-      }
-      break;
     }
   }
 

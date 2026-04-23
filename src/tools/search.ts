@@ -523,7 +523,7 @@ export async function handleWebSearch(
     if (useRaw || !llmProcessor) {
       // Raw path: traditional unified ranked list
       if (!useRaw && !llmProcessor) {
-        llmError = 'LLM unavailable (LLM_EXTRACTION_API_KEY not set). Falling back to raw output.';
+        llmError = 'LLM unavailable (LLM_API_KEY / LLM_BASE_URL / LLM_MODEL not set). Falling back to raw output.';
         mcpLog('warning', llmError, 'search');
         // mcp-revisions/llm-degradation/01: surface degraded mode to the client.
         await reporter.log('warning', 'llm_classifier_unreachable: planner not configured; raw ranked list returned');
