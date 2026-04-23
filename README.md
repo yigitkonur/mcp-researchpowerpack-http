@@ -108,9 +108,10 @@ pnpm inspect      # mcp-use inspector
 
 ## deploy
 
+Deploy to Manufact Cloud via the `mcp-use` CLI (GitHub-backed):
+
 ```bash
-pnpm build
-pnpm deploy       # manufact cloud
+pnpm deploy       # runs: mcp-use deploy --org <your-org>
 ```
 
 Or self-host anywhere with Node 20.19+ / 22.12+:
