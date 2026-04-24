@@ -88,9 +88,23 @@ interface ScrapeClients {
   llmProcessor: ReturnType<typeof createLLMProcessor>;
 }
 
+/**
+ * Any URL the web branch decides to hand off to Jina Reader — either because
+ * Scrape.do returned a binary content-type, or because Scrape.do failed
+ * outright (non-404 error). `scrapeError` is preserved so that, if Jina also
+ * fails, the final error message can surface both layers.
+ *
+ * Genuine 404s are NOT put here — the URL doesn't exist; Jina won't help.
+ */
+interface JinaFallback {
+  url: string;
+  origIndex: number;
+  reason: 'binary_content' | 'scrape_failed';
+  scrapeError?: string;
+}
+
 interface WebPhaseResult extends ScrapePhaseResult {
-  /** URLs that Scrape.do returned as binary content; re-run through Jina. */
-  binaryDeferred: BranchInput[];
+  jinaFallbacks: JinaFallback[];
 }
 
 // --- Reddit URL detection ---
@@ -187,7 +201,7 @@ async function fetchWebBranch(
       successItems: [],
       failedContents: [],
       metrics: { successful: 0, failed: 0, totalCredits: 0 },
-      binaryDeferred: [],
+      jinaFallbacks: [],
     };
   }
 
@@ -198,7 +212,7 @@ async function fetchWebBranch(
 
   const successItems: ProcessedResult[] = [];
   const failedContents: string[] = [];
-  const binaryDeferred: BranchInput[] = [];
+  const jinaFallbacks: JinaFallback[] = [];
   let successful = 0;
   let failed = 0;
   let totalCredits = 0;
@@ -213,20 +227,33 @@ async function fetchWebBranch(
     }
 
     // Binary document detected by content-type — defer to Jina Reader.
-    // These URLs are not counted as failures yet; the handler will re-run
-    // them through the document branch and merge results.
     if (result.error?.code === ErrorCode.UNSUPPORTED_BINARY_CONTENT) {
-      binaryDeferred.push({
+      jinaFallbacks.push({
         url: result.url,
         origIndex: urlToIndex.get(result.url) ?? origIndex,
+        reason: 'binary_content',
       });
       continue;
     }
 
-    if (result.error || result.statusCode < 200 || result.statusCode >= 300) {
+    // Scrape.do failure — only 404s are treated as hard fails (Jina won't
+    // help when the page genuinely doesn't exist). Every other failure mode
+    // (302 redirect loops, WAF blocks, timeouts, 5xx, service unavailable)
+    // gets a second chance through Jina Reader, which uses different IPs
+    // and handles many anti-bot surfaces differently.
+    const scrapeFailed = Boolean(result.error) || result.statusCode < 200 || result.statusCode >= 300;
+    if (scrapeFailed && result.statusCode !== 404) {
+      jinaFallbacks.push({
+        url: result.url,
+        origIndex: urlToIndex.get(result.url) ?? origIndex,
+        reason: 'scrape_failed',
+        scrapeError: result.error?.message || result.content || `HTTP ${result.statusCode}`,
+      });
+      continue;
+    }
+    if (scrapeFailed) {
       failed++;
-      const errorMsg = result.error?.message || result.content || `HTTP ${result.statusCode}`;
-      failedContents.push(`## ${result.url}\n\n❌ Failed to scrape: ${errorMsg}`);
+      failedContents.push(`## ${result.url}\n\n❌ Failed to scrape: HTTP 404 — Page not found`);
       continue;
     }
 
@@ -249,15 +276,31 @@ async function fetchWebBranch(
     successItems,
     failedContents,
     metrics: { successful, failed, totalCredits },
-    binaryDeferred,
+    jinaFallbacks,
   };
 }
 
 // --- Document branch (Jina Reader) ---
 
+/**
+ * Format a Jina-failure line. If the URL was deferred here *after* Scrape.do
+ * already failed, surface both layers' errors so the caller can see that this
+ * isn't just a Jina glitch — the primary path failed too.
+ *
+ * Exported for unit testing.
+ */
+export function formatJinaFailure(url: string, jinaError: string, scrapeError?: string): string {
+  if (scrapeError) {
+    return `## ${url}\n\n❌ Both scrapers failed. Scrape.do: ${scrapeError}. Jina Reader: ${jinaError}.`;
+  }
+  return `## ${url}\n\n❌ Document conversion failed: ${jinaError}`;
+}
+
 async function fetchDocumentBranch(
   inputs: BranchInput[],
   jinaClient: JinaClient,
+  /** Optional: map url → original Scrape.do error, for fallback messaging. */
+  scrapeErrorContext?: Map<string, string>,
 ): Promise<ScrapePhaseResult> {
   if (inputs.length === 0) {
     return { successItems: [], failedContents: [], metrics: { successful: 0, failed: 0, totalCredits: 0 } };
@@ -283,15 +326,16 @@ async function fetchDocumentBranch(
   for (let i = 0; i < results.length; i++) {
     const settled = results[i];
     const input = inputs[i]!;
+    const scrapeError = scrapeErrorContext?.get(input.url);
     if (!settled) {
       failed++;
-      failedContents.push(`## ${input.url}\n\n❌ No result returned (document conversion)`);
+      failedContents.push(formatJinaFailure(input.url, 'No result returned', scrapeError));
       continue;
     }
     if (settled.status === 'rejected') {
       failed++;
       const reason = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
-      failedContents.push(`## ${input.url}\n\n❌ Document conversion failed: ${reason}`);
+      failedContents.push(formatJinaFailure(input.url, reason, scrapeError));
       continue;
     }
 
@@ -299,7 +343,7 @@ async function fetchDocumentBranch(
     if (result.error || result.statusCode < 200 || result.statusCode >= 300) {
       failed++;
       const errorMsg = result.error?.message || `HTTP ${result.statusCode}`;
-      failedContents.push(`## ${input.url}\n\n❌ Document conversion failed: ${errorMsg}`);
+      failedContents.push(formatJinaFailure(input.url, errorMsg, scrapeError));
       continue;
     }
 
@@ -597,12 +641,13 @@ export async function handleScrapeLinks(
   await reporter.progress(35, 100, 'Fetching page content');
 
   // Phase 1 — run all three branches in parallel. Failures in one branch do
-  // not block the others. The web branch may surface binary-content URLs via
-  // `binaryDeferred`, which are re-routed through Jina in Phase 2.
+  // not block the others. The web branch may surface URLs to reroute via
+  // `jinaFallbacks` (binary content-type OR non-404 Scrape.do failure),
+  // which Phase 2 re-runs through Jina Reader.
   const emptyPhase: WebPhaseResult = {
     successItems: [], failedContents: [],
     metrics: { successful: 0, failed: 0, totalCredits: 0 },
-    binaryDeferred: [],
+    jinaFallbacks: [],
   };
   const [webPhase, redditPhase, documentPhase] = await Promise.all([
     webInputs.length > 0
@@ -612,17 +657,29 @@ export async function handleScrapeLinks(
     fetchDocumentBranch(documentInputs, clients.jinaClient),
   ]);
 
-  // Phase 2 — fallback for URLs that Scrape.do reported as binary.
+  // Phase 2 — Jina Reader as a fallback for web-branch URLs that either
+  // returned binary content or failed outright on Scrape.do.
   let deferredPhase: ScrapePhaseResult = {
     successItems: [], failedContents: [],
     metrics: { successful: 0, failed: 0, totalCredits: 0 },
   };
-  if (webPhase.binaryDeferred.length > 0) {
+  if (webPhase.jinaFallbacks.length > 0) {
+    const binaryCount = webPhase.jinaFallbacks.filter((f) => f.reason === 'binary_content').length;
+    const failedCount = webPhase.jinaFallbacks.length - binaryCount;
     await reporter.log(
       'info',
-      `Rerouting ${webPhase.binaryDeferred.length} binary URL(s) from Scrape.do → Jina Reader`,
+      `Rerouting ${webPhase.jinaFallbacks.length} URL(s) to Jina Reader: ${binaryCount} binary, ${failedCount} scrape-failed`,
     );
-    deferredPhase = await fetchDocumentBranch(webPhase.binaryDeferred, clients.jinaClient);
+    const fallbackInputs: BranchInput[] = webPhase.jinaFallbacks.map((f) => ({
+      url: f.url,
+      origIndex: f.origIndex,
+    }));
+    const errorContext = new Map<string, string>(
+      webPhase.jinaFallbacks
+        .filter((f) => f.scrapeError !== undefined)
+        .map((f) => [f.url, f.scrapeError as string]),
+    );
+    deferredPhase = await fetchDocumentBranch(fallbackInputs, clients.jinaClient, errorContext);
   }
 
   const successItems = [
