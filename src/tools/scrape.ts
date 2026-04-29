@@ -291,6 +291,18 @@ async function fetchWebBranch(
   };
 }
 
+function missingScraperWebPhase(inputs: BranchInput[]): WebPhaseResult {
+  return {
+    successItems: [],
+    failedContents: inputs.map((input) => ({
+      index: input.origIndex,
+      content: `## ${input.url}\n\n❌ Web scraping unavailable. Set \`SCRAPEDO_API_KEY\` to enable non-reddit, non-document web URL scraping.`,
+    })),
+    metrics: { successful: 0, failed: inputs.length, totalCredits: 0 },
+    jinaFallbacks: [],
+  };
+}
+
 // --- Document branch (Jina Reader) ---
 
 /**
@@ -679,7 +691,10 @@ export async function handleScrapeLinks(
     );
   }
 
-  if (webInputs.length > 0 && !getCapabilities().scraping) {
+  const scrapingAvailable = getCapabilities().scraping;
+  const hasIndependentBranchInputs = redditInputs.length > 0 || documentInputs.length > 0;
+
+  if (webInputs.length > 0 && !scrapingAvailable && !hasIndependentBranchInputs) {
     return toolFailure(getMissingEnvMessage('scraping'));
   }
 
@@ -699,7 +714,7 @@ export async function handleScrapeLinks(
     clients = {
       jinaClient,
       llmProcessor: createLLMProcessor(),
-      ...(webInputs.length > 0 ? { scraperClient: new ScraperClient() } : {}),
+      ...(webInputs.length > 0 && scrapingAvailable ? { scraperClient: new ScraperClient() } : {}),
     };
   } catch (error) {
     const err = classifyError(error);
@@ -733,14 +748,17 @@ export async function handleScrapeLinks(
   };
   let webPhasePromise: Promise<WebPhaseResult>;
   if (webInputs.length > 0) {
-    if (!clients.scraperClient) {
+    if (!scrapingAvailable) {
+      webPhasePromise = Promise.resolve<WebPhaseResult>(missingScraperWebPhase(webInputs));
+    } else if (!clients.scraperClient) {
       return createScrapeErrorResponse(
         'CLIENT_INIT_FAILED',
         'Failed to initialize scraper: Scrape.do client missing for web URLs',
         startTime,
       );
+    } else {
+      webPhasePromise = fetchWebBranch(webInputs, clients.scraperClient);
     }
-    webPhasePromise = fetchWebBranch(webInputs, clients.scraperClient);
   } else {
     webPhasePromise = Promise.resolve<WebPhaseResult>(emptyPhase);
   }

@@ -171,6 +171,33 @@ test('handleScrapeLinks: document-only URLs can use Jina without SCRAPEDO_API_KE
   assert.equal(result.structuredContent?.metadata.total_credits, 0);
 });
 
+test('handleScrapeLinks: mixed web and document URLs do not fail the whole batch without SCRAPEDO_API_KEY', async (t) => {
+  const calls = installFakeFetch(t, [
+    {
+      status: 200,
+      body: '# Converted PDF\n\nThe document branch should still run.',
+    },
+  ]);
+
+  const result = await handleScrapeLinks({
+    urls: [
+      'https://example.com/web-page',
+      'https://example.com/report.pdf',
+    ],
+  });
+
+  assert.equal(result.isError, false);
+  assert.equal(result.structuredContent?.metadata.successful, 1);
+  assert.equal(result.structuredContent?.metadata.failed, 1);
+  assert.equal(result.structuredContent?.metadata.total_credits, 0);
+  assertSubstringsInOrder(result.content, [
+    '## https://example.com/web-page\n\n❌ Web scraping unavailable. Set `SCRAPEDO_API_KEY`',
+    '## https://example.com/report.pdf\n\n# Converted PDF',
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.url, 'https://r.jina.ai/https://example.com/report.pdf');
+});
+
 test('handleScrapeLinks: mixed invalid, document, and reddit results render in input order', async (t) => {
   installFakeFetch(t, [
     {
