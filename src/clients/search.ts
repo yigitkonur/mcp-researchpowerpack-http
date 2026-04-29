@@ -40,7 +40,7 @@ export interface QuerySearchResult {
   readonly error?: StructuredError;
 }
 
-interface MultipleSearchResponse {
+export interface MultipleSearchResponse {
   readonly searches: QuerySearchResult[];
   readonly totalQueries: number;
   readonly executionTime: number;
@@ -225,7 +225,7 @@ export class SearchClient {
         searches: [],
         totalQueries: queries.length,
         executionTime: Date.now() - startTime,
-        error,
+        error: error ?? { code: ErrorCode.UNKNOWN_ERROR, message: 'Search provider returned no data', retryable: false },
       };
     }
 

@@ -1,4 +1,10 @@
-# Current Tool Surface
+# Archived Tool Surface Probe (v4.2.4)
+
+> **Archive note (v6):** This file records a historical live probe from
+> 2026-04-18. It is not the current tool surface. The current v6 surface has
+> exactly three tools: `start-research`, `web-search`, and `scrape-links`.
+> There is no bootstrap gate; Reddit discovery uses `web-search`
+> `scope: "reddit"`; Reddit post URLs route through `scrape-links`.
 
 ## Purpose
 

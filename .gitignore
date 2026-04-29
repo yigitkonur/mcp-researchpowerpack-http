@@ -109,3 +109,9 @@ docs/superpowers/
 *.tgz
 private/
 .wrangler/
+
+# codex review skill artifacts
+.codex-review-manifest.json
+.codex-review-manifest.json.lock
+.codex-review-rounds/
+.continues-handoff.md

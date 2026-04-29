@@ -10,14 +10,14 @@ import {
 
 test('A3: 4 consecutive quoted phrases → anchor + OR group', () => {
   const r = normalizeQueryForDispatch('"Kimi" "work_dir_hash" "session_id" "context.jsonl"');
-  assert.equal(r.rewritten, '"Kimi" "work_dir_hash" OR "session_id" OR "context.jsonl"');
+  assert.equal(r.rewritten, '"Kimi" ("work_dir_hash" OR "session_id" OR "context.jsonl")');
   assert.deepEqual(r.rules, ['A3']);
   assert.equal(r.changed, true);
 });
 
 test('A3: trailing bare word preserved verbatim', () => {
   const r = normalizeQueryForDispatch('"Kimi" "state.json" "wire.jsonl" "context.jsonl" parser');
-  assert.equal(r.rewritten, '"Kimi" "state.json" OR "wire.jsonl" OR "context.jsonl" parser');
+  assert.equal(r.rewritten, '"Kimi" ("state.json" OR "wire.jsonl" OR "context.jsonl") parser');
   assert.deepEqual(r.rules, ['A3']);
 });
 
@@ -25,7 +25,7 @@ test('A3: 6 phrases with trailing bare word', () => {
   const r = normalizeQueryForDispatch('"Kiro IDE" "modelId" "startTime" "endTime" "chat" "metadata" GitHub');
   assert.equal(
     r.rewritten,
-    '"Kiro IDE" "modelId" OR "startTime" OR "endTime" OR "chat" OR "metadata" GitHub',
+    '"Kiro IDE" ("modelId" OR "startTime" OR "endTime" OR "chat" OR "metadata") GitHub',
   );
   assert.deepEqual(r.rules, ['A3']);
 });
@@ -48,6 +48,18 @@ test('A2: github.com path de-quoted', () => {
   assert.deepEqual(r.rules, ['A2']);
 });
 
+test('A2: quoted URL preserves scheme while de-quoting', () => {
+  const r = normalizeQueryForDispatch('"https://github.com/org/repo"');
+  assert.equal(r.rewritten, 'https://github.com/org/repo');
+  assert.deepEqual(r.rules, ['A2']);
+});
+
+test('A2: quoted URL with port-like colon preserves URL punctuation', () => {
+  const r = normalizeQueryForDispatch('"https://api.example.com:8443/v1/users"');
+  assert.equal(r.rewritten, 'https://api.example.com:8443/v1/users');
+  assert.deepEqual(r.rules, ['A2']);
+});
+
 test('A1+A2: combined application; A3 does not fire when count drops below 3', () => {
   // Pre-A: 4 quoted phrases. After A1 strips one, after A2 strips another →
   // 2 still-quoted; A3 must not fire.
@@ -59,13 +71,13 @@ test('A1+A2: combined application; A3 does not fire when count drops below 3', (
 test('A1+A2+A3: combined application; A3 still fires when ≥3 phrases survive', () => {
   // 5 phrases: one with operator chars, one path-like, three plain.
   const r = normalizeQueryForDispatch('"feat(x):y" "~/.foo" "a" "b" "c"');
-  assert.equal(r.rewritten, 'feat x y ~/.foo "a" "b" OR "c"');
+  assert.equal(r.rewritten, 'feat x y ~/.foo "a" ("b" OR "c")');
   assert.deepEqual(r.rules, ['A1', 'A2', 'A3']);
 });
 
-test('A3 with site: operator preserved verbatim', () => {
-  const r = normalizeQueryForDispatch('site:github.com "a" "b" "c" "d"');
-  assert.equal(r.rewritten, 'site:github.com "a" "b" OR "c" OR "d"');
+test('A3 with site: and filetype: operators preserved verbatim', () => {
+  const r = normalizeQueryForDispatch('site:github.com filetype:md "a" "b" "c" "d"');
+  assert.equal(r.rewritten, 'site:github.com filetype:md "a" ("b" OR "c" OR "d")');
   assert.deepEqual(r.rules, ['A3']);
 });
 
@@ -108,11 +120,9 @@ test('Phase A: whitespace-only query', () => {
   assert.equal(r.changed, false);
 });
 
-test('Phase A: phrases interrupted by bare word — only consecutive run gets OR', () => {
-  // 3 phrases with a bare word splitting them. A3 fires (count=3) but only
-  // the whitespace-only raw between phrase #2 and #3 gets OR-ified.
+test('A3: bare word between anchor and OR group preserved verbatim', () => {
   const r = normalizeQueryForDispatch('"a" foo "b" "c"');
-  assert.equal(r.rewritten, '"a" foo "b" OR "c"');
+  assert.equal(r.rewritten, '"a" foo ("b" OR "c")');
   assert.deepEqual(r.rules, ['A3']);
 });
 
@@ -136,9 +146,15 @@ test('B1+B2: strip quotes and site: filter', () => {
   assert.deepEqual(r.rules, ['B1', 'B2']);
 });
 
+test('B1: can preserve site: filter for scoped retries', () => {
+  const r = relaxQueryForRetry('"foo bar" site:reddit.com', { dropSite: false });
+  assert.equal(r.rewritten, 'foo bar site:reddit.com');
+  assert.deepEqual(r.rules, ['B1']);
+});
+
 test('B1: post-A3 form is retried by stripping quotes', () => {
-  const r = relaxQueryForRetry('"Kimi" "work_dir_hash" OR "session_id" OR "context.jsonl"');
-  assert.equal(r.rewritten, 'Kimi work_dir_hash OR session_id OR context.jsonl');
+  const r = relaxQueryForRetry('"Kimi" ("work_dir_hash" OR "session_id" OR "context.jsonl")');
+  assert.equal(r.rewritten, 'Kimi (work_dir_hash OR session_id OR context.jsonl)');
   assert.deepEqual(r.rules, ['B1']);
 });
 

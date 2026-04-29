@@ -3,6 +3,10 @@ import test from 'node:test';
 
 import { buildOrientation, buildStaticScaffolding } from '../src/tools/start-research.js';
 
+const CANONICAL_RUN_RESEARCH_INSTALL_COMMAND =
+  'npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /run-research';
+const RUN_RESEARCH_HINT_TEXT = 'Pair this server with the `run-research` skill';
+
 test('static scaffolding teaches the 3-tool mental model', () => {
   const markdown = buildStaticScaffolding();
 
@@ -56,9 +60,16 @@ test('buildOrientation is exported as a backward-compat alias', () => {
   assert.equal(buildOrientation, buildStaticScaffolding);
 });
 
-test('scaffolding surfaces the run-research skill install hint', () => {
+test('scaffolding starts with the canonical run-research skill install hint', () => {
   const markdown = buildStaticScaffolding();
 
+  assert.ok(markdown.startsWith('> '), 'expected the skill install hint block to be first');
+  assert.ok(
+    markdown.slice(0, 200).includes(RUN_RESEARCH_HINT_TEXT),
+    'expected the first block to name the run-research skill',
+  );
   assert.match(markdown, /run-research/);
   assert.match(markdown, /npx -y skills add/);
+  assert.match(markdown, /https:\/\/github\.com\/yigitkonur\/skills-by-yigitkonur --skill \/run-research/);
+  assert.ok(markdown.includes(CANONICAL_RUN_RESEARCH_INSTALL_COMMAND));
 });

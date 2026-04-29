@@ -77,9 +77,14 @@ interface ScrapeMetrics {
   totalCredits: number;
 }
 
+interface FailedContent {
+  content: string;
+  index: number;
+}
+
 interface ScrapePhaseResult {
   successItems: ProcessedResult[];
-  failedContents: string[];
+  failedContents: FailedContent[];
   metrics: ScrapeMetrics;
 }
 
@@ -89,7 +94,7 @@ interface BranchInput {
 }
 
 interface ScrapeClients {
-  client: ScraperClient;
+  scraperClient?: ScraperClient;
   jinaClient: JinaClient;
   llmProcessor: ReturnType<typeof createLLMProcessor>;
 }
@@ -214,10 +219,9 @@ async function fetchWebBranch(
   mcpLog('info', `[concurrency] web branch: fanning out ${inputs.length} URL(s) with limit=${CONCURRENCY.SCRAPER}`, 'scrape');
   const urls = inputs.map((i) => i.url);
   const results = await client.scrapeMultiple(urls, { timeout: 60 });
-  const urlToIndex = new Map(inputs.map((i) => [i.url, i.origIndex]));
 
   const successItems: ProcessedResult[] = [];
-  const failedContents: string[] = [];
+  const failedContents: FailedContent[] = [];
   const jinaFallbacks: JinaFallback[] = [];
   let successful = 0;
   let failed = 0;
@@ -225,10 +229,11 @@ async function fetchWebBranch(
 
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    const origIndex = inputs[i]!.origIndex;
+    const input = inputs[i]!;
+    const origIndex = input.origIndex;
     if (!result) {
       failed++;
-      failedContents.push(`## ${inputs[i]!.url}\n\n❌ No result returned`);
+      failedContents.push({ index: origIndex, content: `## ${input.url}\n\n❌ No result returned` });
       continue;
     }
 
@@ -236,7 +241,7 @@ async function fetchWebBranch(
     if (result.error?.code === ErrorCode.UNSUPPORTED_BINARY_CONTENT) {
       jinaFallbacks.push({
         url: result.url,
-        origIndex: urlToIndex.get(result.url) ?? origIndex,
+        origIndex,
         reason: 'binary_content',
       });
       continue;
@@ -251,7 +256,7 @@ async function fetchWebBranch(
     if (scrapeFailed && result.statusCode !== 404) {
       jinaFallbacks.push({
         url: result.url,
-        origIndex: urlToIndex.get(result.url) ?? origIndex,
+        origIndex,
         reason: 'scrape_failed',
         scrapeError: result.error?.message || result.content || `HTTP ${result.statusCode}`,
       });
@@ -259,7 +264,7 @@ async function fetchWebBranch(
     }
     if (scrapeFailed) {
       failed++;
-      failedContents.push(`## ${result.url}\n\n❌ Failed to scrape: HTTP 404 — Page not found`);
+      failedContents.push({ index: origIndex, content: `## ${result.url}\n\n❌ Failed to scrape: HTTP 404 — Page not found` });
       continue;
     }
 
@@ -325,7 +330,7 @@ async function fetchDocumentBranch(
   );
 
   const successItems: ProcessedResult[] = [];
-  const failedContents: string[] = [];
+  const failedContents: FailedContent[] = [];
   let successful = 0;
   let failed = 0;
 
@@ -335,13 +340,13 @@ async function fetchDocumentBranch(
     const scrapeError = scrapeErrorContext?.get(input.url);
     if (!settled) {
       failed++;
-      failedContents.push(formatJinaFailure(input.url, 'No result returned', scrapeError));
+      failedContents.push({ index: input.origIndex, content: formatJinaFailure(input.url, 'No result returned', scrapeError) });
       continue;
     }
     if (settled.status === 'rejected') {
       failed++;
       const reason = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
-      failedContents.push(formatJinaFailure(input.url, reason, scrapeError));
+      failedContents.push({ index: input.origIndex, content: formatJinaFailure(input.url, reason, scrapeError) });
       continue;
     }
 
@@ -349,7 +354,7 @@ async function fetchDocumentBranch(
     if (result.error || result.statusCode < 200 || result.statusCode >= 300) {
       failed++;
       const errorMsg = result.error?.message || `HTTP ${result.statusCode}`;
-      failedContents.push(formatJinaFailure(input.url, errorMsg, scrapeError));
+      failedContents.push({ index: input.origIndex, content: formatJinaFailure(input.url, errorMsg, scrapeError) });
       continue;
     }
 
@@ -401,7 +406,10 @@ async function fetchRedditBranch(inputs: BranchInput[]): Promise<ScrapePhaseResu
   const env = parseEnv();
   if (!env.REDDIT_CLIENT_ID || !env.REDDIT_CLIENT_SECRET) {
     const failedContents = inputs.map(
-      (i) => `## ${i.url}\n\n❌ Reddit URL detected, but Reddit API is not configured. Set \`REDDIT_CLIENT_ID\` and \`REDDIT_CLIENT_SECRET\` in the server env to enable threaded Reddit scraping.`,
+      (i) => ({
+        index: i.origIndex,
+        content: `## ${i.url}\n\n❌ Reddit URL detected, but Reddit API is not configured. Set \`REDDIT_CLIENT_ID\` and \`REDDIT_CLIENT_SECRET\` in the server env to enable threaded Reddit scraping.`,
+      }),
     );
     return {
       successItems: [],
@@ -423,7 +431,10 @@ async function fetchRedditBranch(inputs: BranchInput[]): Promise<ScrapePhaseResu
   );
 
   const nonPermalinkFailed = nonPermalinks.map(
-    (i) => `## ${i.url}\n\n❌ Only Reddit post permalinks (/r/<sub>/comments/<id>/...) are supported. Use web-search with scope:"reddit" to discover post permalinks first.`,
+    (i) => ({
+      index: i.origIndex,
+      content: `## ${i.url}\n\n❌ Only Reddit post permalinks (/r/<sub>/comments/<id>/...) are supported. Use web-search with scope:"reddit" to discover post permalinks first.`,
+    }),
   );
 
   if (postInputs.length === 0) {
@@ -441,7 +452,7 @@ async function fetchRedditBranch(inputs: BranchInput[]): Promise<ScrapePhaseResu
   const urlToIndex = new Map(postInputs.map((i) => [i.url, i.origIndex]));
 
   const successItems: ProcessedResult[] = [];
-  const failedContents: string[] = [...nonPermalinkFailed];
+  const failedContents: FailedContent[] = [...nonPermalinkFailed];
   let successful = 0;
   let failed = nonPermalinks.length;
 
@@ -449,7 +460,7 @@ async function fetchRedditBranch(inputs: BranchInput[]): Promise<ScrapePhaseResu
     const origIndex = urlToIndex.get(url) ?? -1;
     if (result instanceof Error) {
       failed++;
-      failedContents.push(`## ${url}\n\n❌ Reddit fetch failed: ${result.message}`);
+      failedContents.push({ index: origIndex, content: `## ${url}\n\n❌ Reddit fetch failed: ${result.message}` });
       continue;
     }
     successful++;
@@ -566,19 +577,25 @@ async function processItemsWithLlm(
 
 // --- Output assembly ---
 
-function assembleContentEntries(successItems: ProcessedResult[], failedContents: string[]): string[] {
-  const sorted = [...successItems].sort((a, b) => a.index - b.index);
-  const contents = [...failedContents];
-  for (const item of sorted) {
+interface ContentEntry {
+  content: string;
+  index: number;
+}
+
+export function assembleContentEntries(successItems: ProcessedResult[], failedContents: FailedContent[]): string[] {
+  const successEntries: ContentEntry[] = successItems.map((item) => {
     let content = item.content;
     try {
       content = removeMetaTags(content);
     } catch {
       // Use content as-is
     }
-    contents.push(`## ${item.url}\n\n${content}`);
-  }
-  return contents;
+    return { index: item.index, content: `## ${item.url}\n\n${content}` };
+  });
+
+  return [...failedContents, ...successEntries]
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.content);
 }
 
 function buildScrapeResponse(
@@ -662,6 +679,10 @@ export async function handleScrapeLinks(
     );
   }
 
+  if (webInputs.length > 0 && !getCapabilities().scraping) {
+    return toolFailure(getMissingEnvMessage('scraping'));
+  }
+
   mcpLog(
     'info',
     `Starting scrape: ${webInputs.length} web + ${redditInputs.length} reddit + ${documentInputs.length} document URL(s)`,
@@ -672,22 +693,14 @@ export async function handleScrapeLinks(
   // Only initialize the Scrape.do client if we actually have HTML/web URLs.
   // The Jina client is cheap (no auth needed) and always constructed so the
   // document branch and the web→Jina fallback path both work uniformly.
-  let clients: ScrapeClients | null = null;
+  let clients: ScrapeClients;
   try {
     const jinaClient = new JinaClient();
-    if (webInputs.length > 0) {
-      clients = {
-        client: new ScraperClient(),
-        jinaClient,
-        llmProcessor: createLLMProcessor(),
-      };
-    } else {
-      clients = {
-        client: null as unknown as ScraperClient,
-        jinaClient,
-        llmProcessor: createLLMProcessor(),
-      };
-    }
+    clients = {
+      jinaClient,
+      llmProcessor: createLLMProcessor(),
+      ...(webInputs.length > 0 ? { scraperClient: new ScraperClient() } : {}),
+    };
   } catch (error) {
     const err = classifyError(error);
     return createScrapeErrorResponse(
@@ -718,10 +731,21 @@ export async function handleScrapeLinks(
     metrics: { successful: 0, failed: 0, totalCredits: 0 },
     jinaFallbacks: [],
   };
+  let webPhasePromise: Promise<WebPhaseResult>;
+  if (webInputs.length > 0) {
+    if (!clients.scraperClient) {
+      return createScrapeErrorResponse(
+        'CLIENT_INIT_FAILED',
+        'Failed to initialize scraper: Scrape.do client missing for web URLs',
+        startTime,
+      );
+    }
+    webPhasePromise = fetchWebBranch(webInputs, clients.scraperClient);
+  } else {
+    webPhasePromise = Promise.resolve<WebPhaseResult>(emptyPhase);
+  }
   const [webPhase, redditPhase, documentPhase] = await Promise.all([
-    webInputs.length > 0
-      ? fetchWebBranch(webInputs, clients.client)
-      : Promise.resolve<WebPhaseResult>(emptyPhase),
+    webPhasePromise,
     fetchRedditBranch(redditInputs),
     fetchDocumentBranch(documentInputs, clients.jinaClient),
   ]);
@@ -758,7 +782,7 @@ export async function handleScrapeLinks(
     ...deferredPhase.successItems,
   ];
   const invalidFailed = invalidEntries.map(
-    ({ url }) => `## ${url}\n\n❌ Invalid URL format`,
+    ({ url, origIndex }) => ({ index: origIndex, content: `## ${url}\n\n❌ Invalid URL format` }),
   );
   const failedContents = [
     ...invalidFailed,
@@ -838,10 +862,6 @@ export function registerScrapeLinksTool(server: MCPServer): void {
       },
     },
     async (args, ctx) => {
-      if (!getCapabilities().scraping) {
-        return toToolResponse(toolFailure(getMissingEnvMessage('scraping')));
-      }
-
       const reporter = createToolReporter(ctx, 'scrape-links');
       const result = await handleScrapeLinks(args, reporter);
 

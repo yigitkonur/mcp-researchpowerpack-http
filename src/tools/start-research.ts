@@ -24,11 +24,11 @@ const SKILL_INSTALL_HINT = [
   '> Install once per machine — the skill is what teaches the agent how to spend these tools well:',
   '>',
   '> ```bash',
-  '> npx -y skills add -y -g yigitkonur/skills-by-yigitkonur/skills/run-research',
+  '> npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /run-research',
   '> ```',
   '>',
   '> Already installed? Skip this — the skill auto-loads on relevant prompts. The full pack',
-  '> ships ~50 sibling skills: `npx -y skills add -y -g yigitkonur/skills-by-yigitkonur`.',
+  '> ships ~50 sibling skills: `npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur`.',
 ].join('\n');
 
 /**
@@ -49,9 +49,9 @@ export function buildStaticScaffolding(goal?: string, opts: { plannerAvailable?:
     : '3. Classifier output is NOT available (LLM planner offline). `web-search` returns a raw ranked list — synthesize the terrain yourself from titles + snippets.';
 
   return [
-    '# Research session started',
-    '',
     SKILL_INSTALL_HINT,
+    '',
+    '# Research session started',
     '',
     focusLine,
     '',
@@ -103,9 +103,9 @@ export function buildDegradedStub(goal?: string): string {
     ? `> Focus for this session: ${goal}`
     : '> Focus for this session: not specified — set one on the next pass.';
   return [
-    '# Research session started (LLM planner offline — compact stub)',
-    '',
     SKILL_INSTALL_HINT,
+    '',
+    '# Research session started (LLM planner offline — compact stub)',
     '',
     focusLine,
     '',

@@ -1,4 +1,8 @@
-# Output Formatting Patterns
+# Archived Output Formatting Patterns (v4/v5)
+
+> **Archive note (v6):** This file is historical review evidence for the
+> v4/v5 output-shaping plan. It mentions removed tools and old footers. Use
+> `AGENTS.md`, `README.md`, and current source for v6 behavior.
 
 ## Purpose
 

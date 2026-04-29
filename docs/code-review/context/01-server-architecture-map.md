@@ -1,4 +1,12 @@
-# Server Architecture Map
+# Archived Server Architecture Map (v4.2.4)
+
+> **Archive note (v6):** This file is historical review evidence from the
+> v4/v5 revision rollout. It is not current contributor guidance. The current
+> v6 contract is in `AGENTS.md` and `README.md`: three tools
+> (`start-research`, `web-search`, `scrape-links`), no bootstrap gate, no
+> workflow-state store, Reddit post URLs routed by `scrape-links`, Reddit
+> discovery via `web-search` `scope: "reddit"`, and document URLs routed
+> through Jina Reader.
 
 ## Purpose
 

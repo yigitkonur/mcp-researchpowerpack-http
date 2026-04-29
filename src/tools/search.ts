@@ -12,7 +12,7 @@ import {
   type WebSearchParams,
   type WebSearchOutput,
 } from '../schemas/web-search.js';
-import { SearchClient } from '../clients/search.js';
+import { SearchClient, type MultipleSearchResponse } from '../clients/search.js';
 import {
   aggregateAndRank,
   generateUnifiedOutput,
@@ -25,7 +25,7 @@ import {
   type ClassificationResult,
   type RefineQuerySuggestion,
 } from '../services/llm-processor.js';
-import { classifyError } from '../utils/errors.js';
+import { classifyError, type StructuredError } from '../utils/errors.js';
 import { classifySourceByUrl } from '../utils/source-type.js';
 import {
   mcpLog,
@@ -56,10 +56,11 @@ interface SearchAggregation {
   readonly thresholdNote?: string;
 }
 
-interface SearchResponse {
-  searches: Parameters<typeof aggregateAndRank>[0];
-  totalQueries: number;
-}
+export type SearchResponse = MultipleSearchResponse;
+export type SearchExecutor = (queries: string[]) => Promise<SearchResponse>;
+
+type SearchFailurePhase = 'initial' | 'relax-retry';
+type SearchResultScope = 'web' | 'reddit';
 
 // --- Helpers ---
 
@@ -69,12 +70,31 @@ interface SearchResponse {
 const REDDIT_POST_PERMALINK = /\/r\/[^/]+\/comments\/[a-z0-9]+\//i;
 const REDDIT_HOST = /(?:^|\.)reddit\.com$/i;
 
-function decorateQueriesForScope(queries: string[], scope: 'web' | 'reddit' | 'both'): string[] {
-  if (scope === 'web') return queries;
+interface ScopedQuery {
+  query: string;
+  resultScope: SearchResultScope;
+  dropSiteOnRetry: boolean;
+}
+
+function redditScopedQuery(query: string): string {
+  return /\bsite:reddit\.com\b/i.test(query) ? query : `${query} site:reddit.com`;
+}
+
+function buildScopedQueries(queries: string[], scope: 'web' | 'reddit' | 'both'): ScopedQuery[] {
+  if (scope === 'web') {
+    return queries.map((query) => ({ query, resultScope: 'web', dropSiteOnRetry: true }));
+  }
+
   const reddited = queries.map((q) =>
-    /\bsite:reddit\.com\b/i.test(q) ? q : `${q} site:reddit.com`,
+    ({ query: redditScopedQuery(q), resultScope: 'reddit' as const, dropSiteOnRetry: false }),
   );
-  return scope === 'reddit' ? reddited : [...queries, ...reddited];
+
+  if (scope === 'reddit') return reddited;
+
+  return [
+    ...queries.map((query) => ({ query, resultScope: 'web' as const, dropSiteOnRetry: true })),
+    ...reddited,
+  ];
 }
 
 async function executeSearches(queries: string[]): Promise<SearchResponse> {
@@ -103,8 +123,14 @@ interface RetriedQueryRecord {
 async function executeWithRelaxRetry(
   dispatched: string[],
   reporter: ToolReporter,
-): Promise<{ response: SearchResponse; retried: RetriedQueryRecord[] }> {
-  const initial = await executeSearches(dispatched);
+  searchExecutor: SearchExecutor = executeSearches,
+  retryOptions: { readonly dropSiteOnRetry?: readonly boolean[] } = {},
+): Promise<{ response: SearchResponse; retried: RetriedQueryRecord[]; failurePhase?: SearchFailurePhase }> {
+  const initial = await searchExecutor(dispatched);
+
+  if (initial.error) {
+    return { response: initial, retried: [], failurePhase: 'initial' };
+  }
 
   const emptyIndices = initial.searches
     .map((s, i) => (s.results.length === 0 ? i : -1))
@@ -119,7 +145,7 @@ async function executeWithRelaxRetry(
   for (const idx of emptyIndices) {
     const dq = dispatched[idx];
     if (typeof dq !== 'string') continue;
-    const r = relaxQueryForRetry(dq);
+    const r = relaxQueryForRetry(dq, { dropSite: retryOptions.dropSiteOnRetry?.[idx] ?? true });
     if (r.changed && r.rewritten !== dq) {
       plans.push({ index: idx, original: dq, relaxed: r.rewritten, rules: [...r.rules] });
     }
@@ -139,7 +165,7 @@ async function executeWithRelaxRetry(
     `${plans.length} queries returned 0 results; retrying with relaxation`,
   );
 
-  const retryResp = await executeSearches(plans.map((p) => p.relaxed));
+  const retryResp = await searchExecutor(plans.map((p) => p.relaxed));
   const retried: RetriedQueryRecord[] = [];
   const retryByIndex = new Map<number, SearchResponse['searches'][number]>();
 
@@ -153,6 +179,14 @@ async function executeWithRelaxRetry(
       recovered_results: r?.results.length ?? 0,
     });
   });
+
+  if (retryResp.error) {
+    return {
+      response: { ...initial, error: retryResp.error },
+      retried,
+      failurePhase: 'relax-retry',
+    };
+  }
 
   const mergedSearches = initial.searches.map((s, idx) => {
     const r = retryByIndex.get(idx);
@@ -171,18 +205,25 @@ async function executeWithRelaxRetry(
 function filterScopedSearches(
   response: SearchResponse,
   scope: 'web' | 'reddit' | 'both',
+  resultScopes: readonly SearchResultScope[] = [],
 ): SearchResponse {
   if (scope === 'web') return response;
-  const filtered = response.searches.map((search) => ({
-    ...search,
-    results: search.results.filter((r) => {
-      let host: string;
-      try { host = new URL(r.link).hostname; } catch { return true; }
-      // Non-reddit URLs pass through; reddit URLs must be post permalinks.
-      if (!REDDIT_HOST.test(host)) return scope !== 'reddit';
-      return REDDIT_POST_PERMALINK.test(r.link);
-    }),
-  }));
+  const filtered = response.searches.map((search, index) => {
+    const resultScope = resultScopes[index] ?? (scope === 'reddit' ? 'reddit' : 'web');
+    return {
+      ...search,
+      results: search.results.filter((r) => {
+        let host: string;
+        try { host = new URL(r.link).hostname; } catch { return true; }
+        if (resultScope === 'reddit') {
+          return REDDIT_HOST.test(host) && REDDIT_POST_PERMALINK.test(r.link);
+        }
+        // Web-side results pass through; reddit URLs still must be post permalinks.
+        if (!REDDIT_HOST.test(host)) return true;
+        return REDDIT_POST_PERMALINK.test(r.link);
+      }),
+    };
+  });
   return { ...response, searches: filtered };
 }
 
@@ -502,11 +543,12 @@ function buildMetadata(
   const lowYieldQueries = searches
     .filter(s => s.results.length <= 1)
     .map(s => s.query);
+  const successfulQueries = searches.filter(s => s.results.length > 0).length;
 
   return {
     total_items: totalQueries,
-    successful: aggregation.rankedUrls.length,
-    failed: totalQueries - searches.filter(s => s.results.length > 0).length,
+    successful: successfulQueries,
+    failed: Math.max(totalQueries - successfulQueries, 0),
     execution_time_ms: executionTime,
     llm_classified: llmClassified,
     scope,
@@ -551,19 +593,48 @@ function buildStructuredResults(
 
 // --- Error builder ---
 
+function isStructuredError(error: unknown): error is StructuredError {
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as Record<string, unknown>;
+  return typeof record.code === 'string'
+    && typeof record.message === 'string'
+    && typeof record.retryable === 'boolean';
+}
+
+function normalizeStructuredError(error: unknown): StructuredError {
+  return isStructuredError(error) ? error : classifyError(error);
+}
+
+function formatSearchFailureMessage(
+  error: StructuredError,
+  phase?: SearchFailurePhase,
+): string {
+  if (phase === 'initial') {
+    return `Search provider failed during initial batch: ${error.message}`;
+  }
+
+  if (phase === 'relax-retry') {
+    return `Search provider failed during relaxed retry batch: ${error.message}`;
+  }
+
+  return error.message;
+}
+
 function buildWebSearchError(
   error: unknown,
   params: WebSearchParams,
   startTime: number,
+  phase?: SearchFailurePhase,
 ): ToolExecutionResult<WebSearchOutput> {
-  const structuredError = classifyError(error);
+  const structuredError = normalizeStructuredError(error);
+  const message = formatSearchFailureMessage(structuredError, phase);
   const executionTime = Date.now() - startTime;
 
-  mcpLog('error', `web-search: ${structuredError.message}`, 'search');
+  mcpLog('error', `web-search: ${message}`, 'search');
 
   const errorContent = formatError({
     code: structuredError.code,
-    message: structuredError.message,
+    message,
     retryable: structuredError.retryable,
     toolName: 'web-search',
     howToFix: ['Verify SERPER_API_KEY is set correctly'],
@@ -583,11 +654,13 @@ function buildWebSearchError(
 export async function handleWebSearch(
   params: WebSearchParams,
   reporter: ToolReporter = NOOP_REPORTER,
+  searchExecutor: SearchExecutor = executeSearches,
 ): Promise<ToolExecutionResult<WebSearchOutput>> {
   const startTime = Date.now();
 
   try {
-    const effectiveQueries = decorateQueriesForScope(params.queries, params.scope);
+    const scopedQueries = buildScopedQueries(params.queries, params.scope);
+    const effectiveQueries = scopedQueries.map((entry) => entry.query);
     if (params.scope !== 'web') {
       mcpLog('info', `Searching scope=${params.scope}: ${params.queries.length} input queries → ${effectiveQueries.length} dispatched`, 'search');
     } else {
@@ -604,6 +677,8 @@ export async function handleWebSearch(
       return { original: q, dispatched: r.rewritten, rules: [...r.rules], changed: r.changed };
     });
     const dispatchedQueries = dispatchPlan.map((p) => p.dispatched);
+    const resultScopes = scopedQueries.map((entry) => entry.resultScope);
+    const dropSiteOnRetry = scopedQueries.map((entry) => entry.dropSiteOnRetry);
     const queryRewrites: QueryRewriteRecord[] = dispatchPlan
       .filter((p) => p.changed)
       .map((p) => ({ original: p.original, rewritten: p.dispatched, rules: p.rules }));
@@ -623,11 +698,19 @@ export async function handleWebSearch(
     // Phase B — on-empty retry: any query returning 0 results gets one
     // relaxed retry (drop quotes, drop site:). Recovered hits replace the
     // empty slot transparently.
-    const { response: rawResponse, retried: retriedQueries } = await executeWithRelaxRetry(
+    const { response: rawResponse, retried: retriedQueries, failurePhase } = await executeWithRelaxRetry(
       dispatchedQueries,
       reporter,
+      searchExecutor,
+      { dropSiteOnRetry },
     );
-    const response = filterScopedSearches(rawResponse, params.scope);
+
+    if (rawResponse.error) {
+      await reporter.log('error', `search_provider_failed: ${rawResponse.error.message}`);
+      return buildWebSearchError(rawResponse.error, params, startTime, failurePhase);
+    }
+
+    const response = filterScopedSearches(rawResponse, params.scope, resultScopes);
     await reporter.progress(50, 100, 'Collected search results');
 
     const { aggregation } = processResults(response);

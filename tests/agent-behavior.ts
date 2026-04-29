@@ -10,6 +10,19 @@ const prompts = [
   'Research pricing changes for a developer tool',
 ] as const;
 
+const sourceFetchToolName = 'scrape-links';
+const removedToolNames = ['get-reddit-post', 'search-reddit'] as const;
+const removedToolNameSet: ReadonlySet<string> = new Set(removedToolNames);
+
+type RemovedToolName = (typeof removedToolNames)[number];
+
+interface McpCall {
+  name: string;
+  arguments: string;
+  error?: string | null;
+  output?: string | null;
+}
+
 interface EvalTrace {
   prompt: string;
   responseId?: string;
@@ -17,13 +30,14 @@ interface EvalTrace {
   firstToolName?: string;
   maxWebSearchQueries: number;
   chainedToSourceFetch: boolean;
-  mcpCalls: Array<{
-    name: string;
-    arguments: string;
-    error?: string | null;
-    output?: string | null;
-  }>;
+  removedToolCalls: RemovedToolName[];
+  invalidBehaviorIssues: string[];
+  mcpCalls: McpCall[];
   error?: string;
+}
+
+function isRemovedToolName(toolName: string): toolName is RemovedToolName {
+  return removedToolNameSet.has(toolName);
 }
 
 function parseQueryCount(argumentsJson: string): number {
@@ -64,6 +78,13 @@ async function runPromptEval(
         output: item.output,
       }));
 
+    const removedToolCalls = mcpCalls
+      .map((call) => call.name)
+      .filter(isRemovedToolName);
+    const invalidBehaviorIssues = removedToolCalls.map(
+      (toolName) => `Removed v6 tool called: ${toolName}; use ${sourceFetchToolName}.`,
+    );
+
     return {
       prompt,
       responseId: response.id,
@@ -75,9 +96,9 @@ async function runPromptEval(
           .filter((call) => call.name === 'web-search')
           .map((call) => parseQueryCount(call.arguments)),
       ),
-      chainedToSourceFetch: mcpCalls.some(
-        (call) => call.name === 'scrape-links' || call.name === 'get-reddit-post',
-      ),
+      chainedToSourceFetch: mcpCalls.some((call) => call.name === sourceFetchToolName),
+      removedToolCalls,
+      invalidBehaviorIssues,
       mcpCalls,
     };
   } catch (error) {
@@ -85,6 +106,8 @@ async function runPromptEval(
       prompt,
       maxWebSearchQueries: 0,
       chainedToSourceFetch: false,
+      removedToolCalls: [],
+      invalidBehaviorIssues: [],
       mcpCalls: [],
       error: error instanceof Error ? error.message : String(error),
     };
@@ -141,17 +164,24 @@ async function main(): Promise<void> {
   const orientationFirstPasses = traces.filter((trace) => trace.firstToolName === 'start-research').length;
   const averageQueryDepth = traces.reduce((sum, trace) => sum + trace.maxWebSearchQueries, 0) / traces.length;
   const chainingPasses = traces.filter((trace) => trace.chainedToSourceFetch).length;
+  const invalidBehaviorIssues = traces.flatMap((trace) => trace.invalidBehaviorIssues);
+  const invalidRemovedToolCallTraces = traces.filter((trace) => trace.removedToolCalls.length > 0).length;
+  const status = invalidBehaviorIssues.length > 0 ? 'failed-invalid-tool-call' : 'completed';
 
   const run = {
     startedAt,
     baseUrl,
     model,
     prompts,
-    status: 'completed',
+    status,
     metrics: {
       orientationFirstRate: orientationFirstPasses / traces.length,
       averageQueryDepth,
       chainingRate: chainingPasses / traces.length,
+    },
+    invalidBehavior: {
+      removedToolCallTraceCount: invalidRemovedToolCallTraces,
+      issues: invalidBehaviorIssues,
     },
     traces,
   };
@@ -164,7 +194,11 @@ async function main(): Promise<void> {
   console.log(`| orientationFirst | ${run.metrics.orientationFirstRate.toFixed(2)} |`);
   console.log(`| queryDepth | ${run.metrics.averageQueryDepth.toFixed(2)} |`);
   console.log(`| chaining | ${run.metrics.chainingRate.toFixed(2)} |`);
-  console.log('EVAL status: completed');
+  console.log(`EVAL status: ${run.status}`);
+
+  if (invalidBehaviorIssues.length > 0) {
+    process.exitCode = 1;
+  }
 }
 
 void main();

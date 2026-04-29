@@ -1,4 +1,9 @@
-# Session and Workflow State
+# Archived Session and Workflow State (v4/v5)
+
+> **Archive note (v6):** This file documents the removed bootstrap/workflow
+> state design. v6 is stateless at the tool layer: `start-research` is
+> recommended by description, not enforced by a bootstrap gate, and there is no
+> workflow-state store.
 
 ## Purpose
 
