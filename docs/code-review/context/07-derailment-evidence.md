@@ -41,7 +41,7 @@ Despite the friction above, the subagent produced a usable recommendation:
 
 - **Primary pick:** Bifrost.
 - **Backup:** Portkey.
-- **Ruled out:** Helicone (acquired), Cloudflare AI Gateway (not a drop-in replacement for the LiteLLM use-case as scoped), OpenRouter (routing layer, not a gateway replacement).
+- **Ruled out:** Helicone (acquired), Cloudflare AI Gateway (not a drop-in replacement for the LiteLLM use-case as scoped).
 - **Decisive evidence:** LiteLLM March-2026 supply-chain attack (surfaced via the Reddit branch) and the Helicone acquisition signal (also Reddit).
 
 This matters for two reasons. First, it proves the **tools do work** — the LiteLLM-alternatives question got a defensible answer. Second, it means every gripe in the friction log is about **efficiency and contract**, not **capability**. A reviewer can use this as a sanity check when triaging a proposed change: if a change removes a feature the subagent used to form the recommendation, it needs a stronger justification than any of the friction tags alone.

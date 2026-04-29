@@ -6,12 +6,15 @@ Walk through `src/services/llm-processor.ts` (~600 LOC) and show, for every expo
 
 ## Shape of `llm-processor.ts`
 
-- Lazy-singleton OpenAI SDK client. Default base URL: OpenRouter.
-- Env keys consulted: `LLM_API_KEY` (planner/classifier) and `LLM_EXTRACTION_API_KEY` (scrape/Reddit extraction).
-- Fallback chain: primary model → `LLM_FALLBACK_MODEL` → surface error.
+- Lazy-singleton OpenAI SDK client. Base URL, key, and model are all read from env — no defaults.
+- Env keys consulted: `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` (required together) and `LLM_FALLBACK_MODEL` (optional).
+- Fallback chain: primary model → `LLM_FALLBACK_MODEL` (3 attempts) → surface error.
+- Fallback is triggered on any of: primary exhausts retries, context-window error on primary, OR input exceeds primary's smaller context cap.
+- `reasoning_effort: 'low'` is always sent; never configurable.
 - Every call wrapped in:
-  - `withStallProtection()` — 15s timeout.
-  - Retry-with-backoff for transient OpenAI errors.
+  - `withStallProtection()` — 75s timeout.
+  - 150s per-request hard deadline.
+  - Retry-with-backoff for transient errors.
 - Five exported functions drive the rest of the server.
 
 ## Function-by-function degradation
@@ -52,7 +55,7 @@ Used by `scrape-links` and `get-reddit-post` to clean raw HTML / thread content 
 |---|---|
 | Success | Noise-free Markdown extraction targeted at the caller's `extract` parameter. |
 | Fallback | Retry against `LLM_FALLBACK_MODEL`. |
-| Total failure | `scrape-links` emits raw HTML-to-Markdown via `MarkdownCleaner` only — cookie banners, nav chrome, repeated hero blocks leak through. `get-reddit-post` prefixes the body with `⚠️ LLM unavailable (LLM_EXTRACTION_API_KEY not set) — raw content returned`. Credits are still charged (see `mcp-revisions/llm-degradation/03`). |
+| Total failure | `scrape-links` emits raw HTML-to-Markdown via `MarkdownCleaner` only — cookie banners, nav chrome, repeated hero blocks leak through. `get-reddit-post` prefixes the body with `⚠️ LLM unavailable (LLM_API_KEY not set) — raw content returned`. Credits are still charged (see `mcp-revisions/llm-degradation/03`). |
 
 ### `suggestRefineQueriesForRawMode()`
 
@@ -71,15 +74,15 @@ Used by `web-search` when the caller passed `raw: true` and LLM is available to 
 | `start-research` | `LLM_API_KEY` (`generateResearchBrief`) | Goal-tailored brief. Static playbook remains. Footer line emitted. |
 | `web-search` | `LLM_API_KEY` (`classifySearchResults`, `suggestRefineQueriesForRawMode`) | Synthesis block, gap list, refine queries, per-URL `source_type`, meaningful consensus labels. Metadata: `"llm_classified":false,"llm_error":"Connection error."` |
 | `search-reddit` | `LLM_API_KEY` (same classifier as `web-search`) | Tiering, relevance filtering, namesake-hit detection. Subreddit homepages leak through. |
-| `scrape-links` | `LLM_EXTRACTION_API_KEY` (`processContentWithLLM`) | Clean Markdown extraction. Cookie banners, nav chrome, repeated hero blocks leak through. |
-| `get-reddit-post` | `LLM_EXTRACTION_API_KEY` (`processContentWithLLM`) | Structured post + top-comments Markdown. Raw thread content returned with warning banner. |
+| `scrape-links` | `LLM_API_KEY` (`processContentWithLLM`) | Clean Markdown extraction. Cookie banners, nav chrome, repeated hero blocks leak through. |
+| `get-reddit-post` | `LLM_API_KEY` (`processContentWithLLM`) | Structured post + top-comments Markdown. Raw thread content returned with warning banner. |
 
 ## How the agent finds out
 
 Today, the only signals a client sees when the LLM is offline are:
 
 - `web-search` metadata footer: `"llm_classified":false,"llm_error":"Connection error."`
-- `get-reddit-post` body banner: `⚠️ LLM unavailable (LLM_EXTRACTION_API_KEY not set) — raw content returned`
+- `get-reddit-post` body banner: `⚠️ LLM unavailable (LLM_API_KEY not set) — raw content returned`
 - `scrape-links` header line: `LLM extraction failures: N` (where N may equal total URLs).
 - `start-research` footer: `Goal-tailored brief unavailable: LLM planner is not configured or failed this call.`
 
@@ -88,6 +91,6 @@ None of these are surfaced via `ctx.log()` or the MCP `initialize` capability bl
 ## Evidence
 
 - Probe footer text captured verbatim: `"llm_classified":false,"llm_error":"Connection error."` (web-search 3-query default).
-- Probe banner: `⚠️ LLM unavailable (LLM_EXTRACTION_API_KEY not set) — raw content returned` (`get-reddit-post`).
+- Probe banner: `⚠️ LLM unavailable (LLM_API_KEY not set) — raw content returned` (`get-reddit-post`).
 - Probe footer: `Goal-tailored brief unavailable: LLM planner is not configured or failed this call. The static playbook above still applies; you can proceed with it, or retry start-research after verifying LLM_API_KEY.` (`start-research`).
 - `scrape-links` header `LLM extraction failures: 1` on a 1-URL call confirms per-URL LLM attempt + fallback accounting.

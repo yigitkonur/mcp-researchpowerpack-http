@@ -1,25 +1,320 @@
 # AGENTS.md
 
-Operating standard for AI agents working on this repository. Read first, every session.
+Operating standard and architecture reference for AI agents working on this repository. `CLAUDE.md` is a symlink to this file — every folder resolves to the same content.
 
-## What this repo is
+---
 
-`mcp-researchpowerpack` (formerly `mcp-researchpowerpack-http` — HTTP suffix dropped in v4.3.0) — an HTTP-first MCP server built on `mcp-use` exposing 4 research tools: `web-search`, `scrape-links`, `get-reddit-post`, and `start-research` (bootstrap gate). ES-module TypeScript. Self-hosted — there is no canonical hosted instance. If you maintain your own deployment, set `MCP_DEPLOY_URL` in your local environment so the live-verification commands below resolve to your endpoint.
+## 1. What this repo is
 
-`CLAUDE.md` carries the full architecture map and command list. Read it for code-level work. `CHANGELOG.md` carries the user-facing release notes. This file is the **process** standard — what to do, in what order, with what verification.
+`mcp-researchpowerpack` (v6+) — an HTTP-first MCP server built on [`mcp-use`](https://github.com/nicepkg/mcp-use) exposing **three research tools**: `start-research`, `web-search`, `scrape-links`. ES-module TypeScript, published to npm and deployed via Manufact Cloud (`mcp-use deploy`).
 
-## Branch + deploy contract
+Key design contracts (v6):
 
-- Every push to `main` *should* trigger an auto-deploy to your linked Manufact server (set in `.mcp-use/project.json`), but the GitHub-webhook → Manufact path is not 100% reliable (it was observed silent during the v4.3.0 rename). After every push, verify the live `health://status.version` matches `package.json.version`. If not, run `pnpm dlx mcp-use deploy --org <your-org-slug> -y` to force a deploy.
-- The "Publish to npm" GitHub Action is independent of Manufact and ships the package to https://www.npmjs.com/package/mcp-researchpowerpack — that's a separate success surface, do not conflate it with the live deploy being current.
-- Long-running feature work happens on a branch in a worktree at `/Users/yigitkonur/dev/mcp-researchpowerpack-http-revisions/` (worktree path predates the repo rename — kept as-is).
-- Never push to `main` without first running the verification chain in §"Before you push".
+- `scrape-links` auto-detects `reddit.com/r/.../comments/` permalinks and routes them through the Reddit API (threaded post + top comments). The previous `get-reddit-post` tool was merged into `scrape-links` in v6 — do not re-add it.
+- `web-search` accepts `scope: "web" | "reddit" | "both"`. The previous `search-reddit` tool was replaced by `scope: "reddit"` — do not re-add it.
+- Tool discovery is description-led. There is no bootstrap gate — `start-research` is a strong recommendation via tool description, not a runtime precondition.
+
+**Live deployment:** `https://research.yigitkonur.com/mcp` (Manufact Cloud, `deploymentId: 4aab46b4-2b02-4879-a648-2516bde49373`, org `primary-2e5b3ad6`).
+
+---
+
+## 2. Commands
+
+```bash
+pnpm install              # install dependencies
+pnpm dev                  # local dev with watch (mcp-use dev, serves :3000/mcp)
+pnpm build                # compile TypeScript → dist/ (mcp-use build)
+pnpm start                # run compiled server
+pnpm typecheck            # tsc --noEmit (strict mode)
+pnpm test                 # unit tests + HTTP integration test
+pnpm test:unit            # tsx --test tests/**/*.test.ts
+pnpm test:http            # tsx tests/http-server.ts (spawns server, probes HTTP)
+pnpm test:evals           # tsx tests/agent-behavior.ts (eval harness)
+pnpm inspect              # @mcp-use/inspector against http://localhost:3000/mcp
+pnpm deploy               # deploy to Manufact Cloud (mcp-use deploy)
+```
+
+All builds run on the Mac mini. Never build locally. `Makefile` is a symlink to `~/dev/fntalk/scripts/universal-remote-make.mk`, which auto-detects pnpm + TypeScript and proxies every command over SSH.
+
+```bash
+make up        # sync + build on mini (~7s incremental)
+make test      # run tests on mini
+make dev       # start MCP dev server on mini
+make deploy    # deploy from mini
+make info      # show detected config
+```
+
+---
+
+## 3. mcp-use CLI reference
+
+```
+npx mcp-use [options] [command]
+
+Commands:
+  build           Build TypeScript and MCP UI widgets
+  dev             Run development server with auto-reload and inspector
+  start           Start production server
+  login           Login to mcp-use cloud
+  logout          Logout from Manufact cloud
+  whoami          Show current user information
+  org             Manage organizations
+  deploy          Deploy MCP server from GitHub to Manufact cloud
+  client          Interactive MCP client for terminal usage
+  deployments     Manage cloud deployments
+  servers         Manage cloud servers (Git-backed deploy targets)
+  skills          Manage mcp-use AI agent skills
+  generate-types  Generate TypeScript type definitions (.mcp-use/tool-registry.d.ts)
+```
+
+Deploy path: GitHub → Manufact Cloud. No Railway. `.mcp-use/project.json` is tracked in git (via `!.mcp-use/project.json` in `.gitignore`) and is rewritten by every `mcp-use deploy`. If a deploy fails because of that dirty file, commit it or run `git update-index --skip-worktree .mcp-use/project.json` once and retry.
+
+Env var management (Manufact Cloud rejects `env update`; use rm + add):
+
+```bash
+npx mcp-use servers env list --server <server-id>
+npx mcp-use servers env rm --server <server-id> --key LLM_MODEL
+npx mcp-use servers env add --server <server-id> --key LLM_MODEL --value gpt-5.4-mini
+```
+
+Container must be redeployed for env var changes to take effect.
+
+---
+
+## 4. Architecture
+
+```
+index.ts                     Entry point: server startup, CORS, health endpoints,
+                             experimental capability registration, graceful shutdown
+src/
+  version.ts                 Reads version/name/description from package.json at runtime
+  config/index.ts            Central config: env parsing, capability detection,
+                             concurrency limits, CTR weights, LLM proxy config
+  clients/
+    search.ts                Serper client
+    reddit.ts                Reddit API client (OAuth + threaded fetch)
+    scraper.ts               Scrape.do HTTP scraper client (rejects binary bodies
+                             via content-type sniff so the handler can reroute)
+    jina.ts                  Jina Reader client (r.jina.ai) — turns PDF / DOCX /
+                             PPTX / XLSX URLs into clean markdown
+  tools/
+    registry.ts              registerAllTools() — wires 3 tools + 2 prompts + resources
+    start-research.ts        goal-tailored brief + static playbook + planner circuit-breaker
+    search.ts                web-search handler (scope=web|reddit|both, CTR ranking, LLM tiering)
+    scrape.ts                scrape-links handler (reddit + web + document branches in
+                             parallel; web-branch binary responses reroute to Jina)
+    mcp-helpers.ts           MCP response builders: markdown(), error(), toolFailure()
+    utils.ts                 Shared formatters
+  services/
+    llm-processor.ts         LLM extraction, classification, brief generation —
+                             primary + fallback model, always low reasoning
+    markdown-cleaner.ts      HTML/markdown cleanup (MarkdownCleaner, turndown, readability)
+  schemas/                   Zod v4 input validation schemas (one per tool)
+    start-research.ts
+    web-search.ts
+    scrape-links.ts
+  prompts/
+    deep-research.ts         Optional MCP prompt: deep-research
+    reddit-sentiment.ts      Optional MCP prompt: reddit-sentiment
+  utils/
+    errors.ts                StructuredError with code/retryable/statusCode,
+                             classifyError pipeline, withStallProtection
+    concurrency.ts           pMap/pMapSettled — thin wrappers over p-map@7
+    retry.ts                 Exponential backoff with jitter
+    url-aggregator.ts        CTR-weighted URL ranking for web-search consensus
+    response.ts              formatSuccess/formatError/formatBatchHeader
+    logger.ts                mcpLog() — stderr-only logging (MCP-safe)
+    content-extractor.ts     Readability-style extraction helpers
+    markdown-formatter.ts    Output formatting primitives
+    sanitize.ts              Input sanitization helpers
+    source-type.ts           URL/source type classification
+```
+
+### Key patterns
+
+- **Capability detection**: `getCapabilities()` in `src/config/index.ts` evaluates which API keys are present at startup. Missing keys disable the affected tool gracefully via `getMissingEnvMessage()`; they never crash the server.
+- **Lazy LLM config via `Proxy`**: `LLM_EXTRACTION` throws at first property access if `LLM_BASE_URL` or `LLM_MODEL` are missing while `LLM_API_KEY` is set. Clean startup when LLM is unconfigured.
+- **Bounded concurrency**: Every parallel fan-out uses `pMap`/`pMapSettled` with explicit limits (defaults: search 50, scraper 50, reddit 50, LLM 50; override via env, clamped 1–200).
+- **Reddit + web + document parallelism in `scrape-links`**: Three branches run concurrently via `Promise.all` and results merge in original input order. The document branch uses `JinaClient` (Jina Reader) to convert PDF / DOCX / PPTX / XLSX URLs to markdown; it receives URLs via both a pre-fetch extension gate (`isDocumentUrl`) and a post-fetch fallback path (Scrape.do returns `UNSUPPORTED_BINARY_CONTENT` when `content-type` is binary, triggering a Jina retry for that URL only).
+- **CTR-based URL ranking**: `web-search` scores URLs by CTR position weights (rank 1 → 100, rank 10 → 12.56) and surfaces a static descending weight (`w=N`) to the LLM classifier.
+- **Tools never throw**: Every tool handler wraps in try/catch, returning `toolFailure(errorMessage)` so MCP `isError` flips correctly.
+- **Structured errors**: `StructuredError` with `code`, `retryable`, `statusCode`, `cause`. See §7 for codes.
+- **Stderr-only logging**: `mcpLog()` writes to stderr to avoid polluting the MCP stdout protocol channel.
+- **Experimental MCP capability**: `initialize` advertises `experimental.research_powerpack.{planner_available, extractor_available, planner_model, extractor_model}` so capability-aware clients can branch at session start instead of parsing per-call footers. Registered per session in `index.ts` by patching `getServerForSession`.
+- **Planner circuit-breaker**: `start-research` short-circuits the LLM brief when the planner has failed ≥2 times within 60s (see §6).
+- **Stateless**: There is no workflow-state store in v6. Every tool call is independent. Session IDs are managed entirely by `mcp-use`'s `InMemorySessionStore` for MCP transport, not for business state.
+
+---
+
+## 5. Environment variables
+
+Copy `.env.example`, set only what you need.
+
+### Server
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `HOST` | `127.0.0.1` | bind address; cloud runtimes set `PORT` which auto-switches to `0.0.0.0` |
+| `ALLOWED_ORIGINS` | unset | comma-separated origins for host validation / CORS |
+| `MCP_URL` | unset | public MCP URL fallback for production origin protection |
+| `NODE_ENV` | unset | `production` enforces `ALLOWED_ORIGINS` or `MCP_URL` (exits otherwise) |
+| `DEBUG` | unset | `1` or `2` to bump mcp-use debug verbosity |
+| `UV_THREADPOOL_SIZE` | `8` (set at boot) | raised from Node's default 4 for parallel DNS |
+
+### Provider keys (each enables its tool)
+
+| Var | Tool |
+|---|---|
+| `SERPER_API_KEY` | `web-search` (all scopes) |
+| `SCRAPEDO_API_KEY` | `scrape-links` (non-reddit, non-document URLs) |
+| `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | `scrape-links` (reddit.com permalinks — threaded post + comments) |
+| `JINA_API_KEY` *(optional)* | `scrape-links` (PDF / DOCX / PPTX / XLSX → markdown via `r.jina.ai`). Works unauthenticated at 20 RPM; key raises the limit to 200+ RPM. |
+
+### LLM (required together when LLM is enabled)
+
+| Var | Required | Notes |
+|---|---|---|
+| `LLM_API_KEY` | yes | API key for the OpenAI-compatible endpoint |
+| `LLM_BASE_URL` | yes with `LLM_API_KEY` | e.g. `https://server.up.railway.app/v1`, `https://api.openai.com/v1` |
+| `LLM_MODEL` | yes with `LLM_API_KEY` | primary model, e.g. `gpt-5.4-mini` |
+| `LLM_FALLBACK_MODEL` | no | used after primary exhausts retries; gets `FALLBACK_RETRY_COUNT` (currently 3) attempts, e.g. `gpt-5.4` |
+
+`reasoning_effort` is hardcoded to `'low'` on every LLM call — not configurable. No legacy env-var aliases (e.g. `LLM_EXTRACTION_*`, `LLM_REASONING`) — these were removed in v6.
+
+### Concurrency overrides (all optional, all clamped 1–200)
+
+| Var | Default |
+|---|---|
+| `CONCURRENCY_SEARCH` | 50 |
+| `CONCURRENCY_SCRAPER` | 50 |
+| `CONCURRENCY_REDDIT` | 50 |
+| `LLM_CONCURRENCY` | 50 |
+
+### Eval harness
+
+| Var | Default | Notes |
+|---|---|---|
+| `EVAL_MCP_URL` | `http://localhost:3000/mcp` | target URL for `pnpm test:evals` |
+| `EVAL_MODEL` | `gpt-5.4-mini` | driver model |
+| `EVAL_API_KEY` | unset | driver API key |
+
+---
+
+## 6. LLM resilience numbers
+
+All live in `src/services/llm-processor.ts`:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `MAX_LLM_INPUT_CHARS` | 500 000 | Hard cap on chars sent to LLM; larger inputs are truncated |
+| `MAX_PRIMARY_MODEL_INPUT_CHARS` | 100 000 | Above this, skip the primary model and go straight to fallback (primary has a smaller context window) |
+| `LLM_CLIENT_TIMEOUT_MS` | 600 000 | OpenAI SDK client-level timeout (10 min) |
+| `LLM_STALL_TIMEOUT_MS` | 75 000 | Per-call stall detection (no data flowing) before abort-and-retry |
+| `LLM_REQUEST_DEADLINE_MS` | 150 000 | Per-request hard deadline (2.5 min) |
+| `LLM_RETRY_CONFIG.maxRetries` | 2 | Primary model: 1 initial + 2 retries = 3 attempts |
+| `FALLBACK_RETRY_COUNT` | 3 | Fallback model: 3 attempts after primary exhausts |
+
+### Retry flow (per-call)
+
+1. If input size > `MAX_PRIMARY_MODEL_INPUT_CHARS`, skip primary — go straight to fallback.
+2. Otherwise try primary with `LLM_RETRY_CONFIG.maxRetries` retries and exponential backoff + jitter.
+3. If primary errors with a context-window error on any attempt, stop retrying primary and switch to fallback.
+4. If primary exhausts retries and `LLM_FALLBACK_MODEL` is set, try fallback up to `FALLBACK_RETRY_COUNT` attempts.
+5. Every attempt wrapped in `withStallProtection` (stall timeout) and respects `LLM_REQUEST_DEADLINE_MS`.
+6. If all phases fail, surface the error to the caller — tool handlers catch and degrade gracefully (raw output, skipped classification, degraded brief).
+
+### Planner circuit-breaker (`start-research`)
+
+Defined in `src/tools/start-research.ts`:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `PLANNER_FAILURE_THRESHOLD` | 2 | Consecutive planner failures before gating the brief |
+| `PLANNER_FAILURE_TTL_MS` | 60 000 | Gate only holds for 60s after the last failure |
+
+When tripped, `start-research` skips the goal-tailored brief and emits the static playbook with a footer explaining the degraded state. Counter exposed at `health://status` as `consecutive_planner_failures`.
+
+---
+
+## 7. Error codes
+
+From `src/utils/errors.ts` — every tool handler ultimately routes caught errors through `classifyError()`:
+
+| Code | Retryable | Typical trigger |
+|---|---|---|
+| `RATE_LIMITED` | yes | HTTP 429, "rate limit exceeded" |
+| `TIMEOUT` | yes | AbortError, HTTP 408/504, `ETIMEDOUT`, stall protection |
+| `NETWORK_ERROR` | yes | `ECONNREFUSED`, `ECONNRESET`, `ENOTFOUND` |
+| `SERVICE_UNAVAILABLE` | yes | HTTP 502/503/510, generic 5xx |
+| `AUTH_ERROR` | no | HTTP 401, "Invalid API key" |
+| `INVALID_INPUT` | no | HTTP 400, generic 4xx |
+| `NOT_FOUND` | no | HTTP 404 |
+| `QUOTA_EXCEEDED` | no | HTTP 403 |
+| `INTERNAL_ERROR` | yes | HTTP 500 |
+| `PARSE_ERROR` | no | JSON/schema parse failure |
+| `UNKNOWN_ERROR` | no | catch-all fallback |
+
+Retryable statuses used by `withStallProtection` and retry utilities: `[408, 429, 500, 502, 503, 504, 510]`.
+
+---
+
+## 8. Provider constants
+
+### Reddit (`src/config/index.ts`)
+
+| Constant | Value |
+|---|---|
+| `BATCH_SIZE` | 10 |
+| `MAX_WORDS_PER_POST` | 50 000 |
+| `MAX_WORDS_TOTAL` | 500 000 |
+| `MIN_POSTS` / `MAX_POSTS` | 1 / 50 |
+| `RETRY_COUNT` | 5 |
+| `RETRY_DELAYS` (ms) | `[2000, 4000, 8000, 16000, 32000]` |
+
+### CTR weights (URL ranking in `web-search`)
+
+| Rank | Weight | Rank | Weight |
+|---|---|---|---|
+| 1 | 100.00 | 6 | 26.44 |
+| 2 | 60.00 | 7 | 24.44 |
+| 3 | 48.89 | 8 | 17.78 |
+| 4 | 33.33 | 9 | 13.33 |
+| 5 | 28.89 | 10 | 12.56 |
+
+### Scraper (`src/config/index.ts`)
+
+| Constant | Value |
+|---|---|
+| `BATCH_SIZE` | 30 |
+| `EXTRACTION_PREFIX` | `"Extract from document only — never hallucinate or add external knowledge."` |
+| `EXTRACTION_SUFFIX` | `"First line = content, not preamble. No confirmation messages."` |
+
+---
+
+## 9. TypeScript conventions
+
+- Strict mode: `strict`, `noUncheckedIndexedAccess`, `noImplicitReturns`, `noFallthroughCasesInSwitch`.
+- ES modules (`"type": "module"` in `package.json`, `NodeNext` module resolution). Import specifiers end in `.js`.
+- Zod v4 for all runtime schema validation (schemas in `src/schemas/`).
+- Tool identifiers are kebab-case (`web-search`, not `webSearch`).
+- Node.js **>= 20.19.0** or **>= 22.12.0**.
+- Commits follow Conventional Commits: `type(scope): imperative summary`. Types used in this repo: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`.
+
+---
+
+## 10. Branch + deploy contract
+
+- Every push to `main` triggers auto-deploy to the linked Manufact server (configured in `.mcp-use/project.json`). The GitHub webhook is sometimes flaky — if the deploy doesn't appear within ~90s, force it manually.
+- After every push, verify the live `health://status.version` matches `package.json.version` (or the Manufact auto-bumped one). The auto-bump typically increments the patch (`6.0.3` → `6.0.4`).
+- Force a deploy: `npx mcp-use deploy --org primary-2e5b3ad6 -y`.
+- Long-running feature work happens on a branch in a worktree at `/Users/yigitkonur/dev/mcp-researchpowerpack-http-revisions/`.
+- Never push to `main` without running the verification chain in §11.
 - Never push with `--no-verify`, `--force`, or `--no-gpg-sign` unless the user explicitly says so.
-- `.mcp-use/project.json` is `.gitignore`d but the file gets rewritten by `mcp-use deploy`. If a deploy fails with "uncommitted changes", run `git update-index --skip-worktree .mcp-use/project.json` once and retry.
 
-## Before you push
+---
 
-Run the full verification chain locally. All three must pass:
+## 11. Before you push
 
 ```bash
 pnpm typecheck   # tsc --noEmit, strict mode
@@ -27,103 +322,95 @@ pnpm test:unit   # node:test across tests/*.test.ts
 pnpm test:http   # spawns server on :3000 and exercises tools/list, prompts, resources, schemas
 ```
 
-If any of these fail, fix before pushing. Pre-commit hooks exist for a reason — never bypass them.
+All three must pass. Fix before pushing.
 
-## After you push — verify online with `test-by-mcpc-cli`
+---
 
-A local green test is necessary but not sufficient. The deploy could roll back, hit cold-start issues, or behave differently under the live LLM/Redis setup. **Always probe the live URL before claiming the work is done.**
+## 12. After you push — verify online with `test-by-mcpc-cli`
 
-The probe protocol uses the `test-by-mcpc-cli` skill. If the skill is not installed:
+Install the skill if missing:
 
 ```bash
 npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /test-by-mcpc-cli
 ```
 
-Then invoke it as `/test-by-mcpc-cli` at the start of any verification session and follow its `0.2.x` session-first command family. The skill is the source of truth for `mcpc` syntax — do not improvise commands from older `0.1.x` examples.
-
-### Standard live-server smoke test
-
-Run this against your deployment URL after every deploy. Replace `$MCP_URL` with the URL Manufact (or your chosen platform) returned for the linked deployment:
+### Standard smoke test
 
 ```bash
-mcpc connect "$MCP_URL" @rp
+mcpc connect "https://research.yigitkonur.com/mcp" @rp
 mcpc @rp ping
 mcpc @rp tools-list --full | grep -E "name|requires"
 mcpc @rp resources-read health://status
+mcpc @rp tools-call start-research '{"goal":"smoke test"}'
 mcpc @rp close
 ```
 
-Acceptance criteria for the current revision (v4.3+):
+### Acceptance criteria (v6+)
 
 | Check | Expected |
 |---|---|
-| `tools-list` count | exactly 4 — `start-research`, `web-search`, `scrape-links`, `get-reddit-post`. **No `search-reddit`.** |
+| `tools-list` count | exactly **3** — `start-research`, `web-search`, `scrape-links`. No `get-reddit-post`, no `search-reddit`. |
 | `web-search` schema | exposes `scope: "web" \| "reddit" \| "both"` and `verbose: bool` |
-| Gated tools precondition | `_meta.requires` lists `["start-research"]` on web-search, scrape-links, get-reddit-post (and not on start-research itself). `annotations.experimental.requires` is also set in code but mcp-use's wire-level annotation handling strips it; `_meta` is the actually-surviving channel. Probe with `mcpc --json @session tools-list` and check the `_meta` field. |
-| `health://status` body | includes `llm_planner_ok`, `llm_extractor_ok`, `planner_configured`, `extractor_configured`, `workflow_state_size` |
-| `initialize.capabilities` | includes `experimental.research_powerpack.{planner_available, extractor_available, requires_bootstrap}` |
-| `start-research` body | starts with the `run-research` skill install hint (`npx -y skills add -y -g yigitkonur/skills-by-yigitkonur/skills/run-research`) |
-| `start-research` (no `LLM_API_KEY` reachable) | emits the compact ~300-token degraded stub, not the full ~1100-token playbook |
-| `start-research` with `include_playbook: true` | restores the full playbook |
-| `scrape-links` with a Reddit URL | returns `isError: true` with `UNSUPPORTED_URL_TYPE` and points to `get-reddit-post` |
-| `get-reddit-post` with all-bad URLs | returns `isError: true` (zero-success contract) |
+| `health://status` body | includes `llm_planner_ok`, `llm_extractor_ok`, `planner_configured`, `extractor_configured`, `consecutive_planner_failures`, `consecutive_extractor_failures` |
+| `initialize.capabilities` | includes `experimental.research_powerpack.{planner_available, extractor_available, planner_model, extractor_model}` |
+| `start-research` body | starts with the `run-research` skill install hint |
+| `start-research` (no LLM) | emits the compact degraded stub with a footer, not the full goal-tailored brief |
+| `scrape-links` with a Reddit URL | routes via Reddit API; does NOT return `UNSUPPORTED_URL_TYPE` (that was v5 behaviour — v6 handles Reddit directly) |
+| `scrape-links` with a non-Reddit URL + LLM on | returns cleaned markdown with non-zero extraction credits |
+| `scrape-links` with a `.pdf` URL | routes via Jina Reader (`r.jina.ai`); returns non-empty markdown. Pre-fetch extension gate skips Scrape.do entirely. Also works for `.docx`, `.pptx`, `.xlsx`. |
+| `scrape-links` with a URL whose server returns `Content-Type: application/pdf` | Scrape.do emits `UNSUPPORTED_BINARY_CONTENT` → handler reroutes through Jina Reader → returns markdown. No mojibake/binary garbage in output. |
 
-If any acceptance criterion fails, the deploy is broken — investigate before moving on. Do not assume "the test was flaky."
+The `/health` HTTP endpoint may return a simplified `{status, timestamp}` if the deployment is behind a proxy (e.g. Cloudflare). The MCP `health://status` resource bypasses that and returns the full payload.
 
-## Companion skill — `run-research`
+---
 
-The MCP server is the toolbelt; the [`run-research` skill](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/run-research) is the discipline that teaches an agent how to spend the tools. Install it once per machine:
+## 13. Companion skill — `run-research`
+
+The [`run-research` skill](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/run-research) teaches an agent how to spend these tools. Install once per machine:
 
 ```bash
 npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /run-research
 ```
 
-Or pull the full skills pack (~50 sibling skills):
+The `start-research` tool body starts with an install hint that links back to this skill.
 
-```bash
-npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur
-```
+---
 
-The `start-research` tool emits this install hint on every session-boot — keep that hint in sync if you ever change the install command upstream.
+## 14. Agent operating loop
 
-## Agent operating loop
-
-1. **Read** — `CLAUDE.md`, this file, the relevant `docs/code-review/context/*` doc for the area you are touching.
+1. **Read** — this file, `CHANGELOG.md`, and the relevant `docs/code-review/context/*` doc for the area you are touching.
 2. **Plan** — write a task list (max 30 tasks, one active at a time, every task ends with `commit changes`). Outcome-first names.
-3. **Implement** — strict mode, kebab-case tool names, never throw from tool handlers, route failures through `toolFailure(...)` so `isError` flips correctly.
-4. **Verify locally** — typecheck + unit + http per §"Before you push".
-5. **Commit + push** — small, intentional commits. Push triggers deploy.
-6. **Verify online** — `mcpc` probe per §"After you push".
+3. **Implement** — strict mode, kebab-case tool names, never throw from tool handlers, route failures through `toolFailure(...)`.
+4. **Verify locally** — typecheck + unit + http per §11.
+5. **Commit + push** — small, intentional commits; Conventional Commits format.
+6. **Verify online** — `mcpc` probe per §12.
 7. **Stop** — only when every acceptance criterion is green on the live URL.
 
-If the live verification surfaces a regression, fix it on a hot branch and ship the fix the same way. Never roll back the deploy without first exhausting forward-fix options.
+---
 
-## Don'ts
+## 15. Don'ts
 
-- Do not add new tools without explicit user direction. The contraction-and-quality directive from v4.3 still applies.
-- Do not reintroduce `search-reddit`. Reddit discovery flows through `web-search` with `scope: "reddit"`.
-- Do not pass Reddit URLs to `scrape-links`. The server rejects them with `UNSUPPORTED_URL_TYPE`.
-- Do not add cookie-cutter "Next Steps" footers with literal `[...]` placeholders. Either emit concrete suggestions or omit the block.
-- Do not promise `synthesis` / `gaps` / `refine_queries` from `start-research` when the planner is offline — `buildStaticScaffolding` already routes the loop step based on planner health.
-- Do not assume in-memory state survives a deploy. The `InMemoryWorkflowStateStore` has a 24h TTL; Redis is the only durable store.
+- Do not add new tools without explicit user direction.
+- Do not re-add `get-reddit-post` or `search-reddit`. Reddit discovery in `scrape-links` (scope + URL routing) is the contract.
+- Do not add legacy env-var alias fallbacks. `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` are read directly — that's the contract.
+- Do not set `reasoning_effort` from env — it is hardcoded to `'low'`.
+- Do not pass Reddit URLs to `scrape-links` as "unsupported" — v6 handles them.
+- Do not add cookie-cutter "Next Steps" footers with literal `[...]` placeholders.
+- Do not commit `.env` or any file containing `LLM_API_KEY` / `SERPER_API_KEY` / `REDDIT_CLIENT_SECRET` / `SCRAPEDO_API_KEY`.
+- Do not edit `dist/` by hand — it is regenerated by `pnpm build`.
 
-## Where to look first
+---
+
+## 16. Where to look first
 
 | Need | File |
 |---|---|
 | Architecture map | `docs/code-review/context/01-server-architecture-map.md` |
-| Current tool surface (with probe numbers) | `docs/code-review/context/02-current-tool-surface.md` |
-| LLM degradation paths per function | `docs/code-review/context/03-llm-degradation-paths.md` |
+| Current tool surface | `docs/code-review/context/02-current-tool-surface.md` |
+| LLM degradation paths | `docs/code-review/context/03-llm-degradation-paths.md` |
 | Session + workflow state lifecycle | `docs/code-review/context/04-session-and-workflow-state.md` |
 | Output formatting patterns | `docs/code-review/context/05-output-formatting-patterns.md` |
-| mcp-use best practices the server follows or doesn't | `docs/code-review/context/06-mcp-use-best-practices-primer.md` |
-| Real subagent friction log driving every revision | `docs/code-review/context/07-derailment-evidence.md` |
-
-## When you finish
-
-Mention in your handoff that the next agent should:
-
-1. Read this file (`AGENTS.md`) before touching code.
-2. Use `/test-by-mcpc-cli` to verify any live-affecting change. Install if missing per §"After you push".
-3. Always test on the live URL before claiming done — local-green is necessary but not sufficient.
-4. Update this file when you change the deploy contract, add a new acceptance criterion, or evolve the skill install path.
+| mcp-use best practices | `docs/code-review/context/06-mcp-use-best-practices-primer.md` |
+| Derailment evidence driving revisions | `docs/code-review/context/07-derailment-evidence.md` |
+| Public README | `README.md` |
+| Env template | `.env.example` |
