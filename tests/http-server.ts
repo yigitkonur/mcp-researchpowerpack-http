@@ -10,6 +10,18 @@ const TOOL_NAMES = [
   'scrape-links',
 ] as const;
 
+const PROVIDER_ENV_KEYS = [
+  'SERPER_API_KEY',
+  'SCRAPEDO_API_KEY',
+  'REDDIT_CLIENT_ID',
+  'REDDIT_CLIENT_SECRET',
+  'JINA_API_KEY',
+  'LLM_API_KEY',
+  'LLM_BASE_URL',
+  'LLM_MODEL',
+  'LLM_FALLBACK_MODEL',
+] as const;
+
 type ServerProcess = ReturnType<typeof spawn>;
 
 function pnpmCommand(): string {
@@ -19,13 +31,20 @@ function pnpmCommand(): string {
 function startServer(
   envOverrides: Record<string, string | undefined>,
 ): { child: ServerProcess; logs: { value: string } } {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    MCP_USE_ANONYMIZED_TELEMETRY: 'false',
+  };
+
+  for (const key of PROVIDER_ENV_KEYS) {
+    delete env[key];
+  }
+
+  Object.assign(env, envOverrides);
+
   const child = spawn(pnpmCommand(), ['exec', 'tsx', 'index.ts'], {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
-      MCP_USE_ANONYMIZED_TELEMETRY: 'false',
-      ...envOverrides,
-    },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -141,6 +160,17 @@ async function postJsonRpc(
   });
 }
 
+function isJsonRpcNotification(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'method' in payload &&
+    !('id' in payload) &&
+    !('result' in payload) &&
+    !('error' in payload)
+  );
+}
+
 async function readJsonRpcBody(response: Response): Promise<any> {
   const raw = await response.text();
 
@@ -161,7 +191,11 @@ async function readJsonRpcBody(response: Response): Promise<any> {
 
       const payload = dataLines.join('\n');
       try {
-        return JSON.parse(payload);
+        const parsed = JSON.parse(payload);
+        if (isJsonRpcNotification(parsed)) {
+          continue;
+        }
+        return parsed;
       } catch {
         // Try the next event block.
       }
@@ -220,8 +254,79 @@ async function assertProductionRequiresOriginProtection(): Promise<void> {
   }
 }
 
+async function assertPartialLlmEnvDegrades(): Promise<void> {
+  const port = 3900 + Math.floor(Math.random() * 200);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { child, logs } = startServer({
+    NODE_ENV: 'production',
+    PORT: String(port),
+    HOST: '127.0.0.1',
+    ALLOWED_ORIGINS: baseUrl,
+    LLM_API_KEY: 'partial-test-key',
+  });
+
+  try {
+    await waitForHealth(baseUrl, 20_000);
+
+    const healthFields = await fetch(`${baseUrl}/health`).then((r) => r.json());
+    assert.equal(healthFields.planner_configured, false);
+    assert.equal(healthFields.extractor_configured, false);
+
+    const initializeResponse = await postJsonRpc(baseUrl, {
+      jsonrpc: '2.0',
+      id: 101,
+      method: 'initialize',
+      params: {
+        protocolVersion: TEST_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: {
+          name: 'partial-llm-env-test',
+          version: '1.0.0',
+        },
+      },
+    });
+
+    assert.equal(initializeResponse.status, 200);
+    const sessionId = initializeResponse.headers.get('mcp-session-id');
+    assert.ok(sessionId, 'expected mcp-session-id header for partial LLM env');
+    const initializeJson = await readJsonRpcBody(initializeResponse);
+    assert.ok(initializeJson.result, 'expected initialize result for partial LLM env');
+
+    await postJsonRpc(
+      baseUrl,
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+        params: {},
+      },
+      sessionId,
+    );
+
+    const startedJson = await callTool(
+      baseUrl,
+      sessionId,
+      'start-research',
+      { goal: 'partial LLM environment smoke test' },
+      102,
+    );
+    assert.notEqual(startedJson.result?.isError, true);
+    const startedText: string | undefined = startedJson.result?.content?.[0]?.text;
+    assert.equal(typeof startedText, 'string');
+    assert.match(startedText!, /LLM planner offline|compact stub/);
+    assert.doesNotMatch(JSON.stringify(startedJson), /LLM_BASE_URL is required/);
+  } finally {
+    if (child.exitCode === null) {
+      await stopServer(child);
+    }
+  }
+
+  assert.doesNotMatch(logs.value, /LLM_BASE_URL is required/);
+  assert.doesNotMatch(logs.value, /LLM_MODEL is required/);
+}
+
 async function main(): Promise<void> {
   await assertProductionRequiresOriginProtection();
+  await assertPartialLlmEnvDegrades();
 
   const port = 3300 + Math.floor(Math.random() * 400);
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -230,7 +335,6 @@ async function main(): Promise<void> {
     PORT: String(port),
     HOST: '127.0.0.1',
     ALLOWED_ORIGINS: baseUrl,
-    SERPER_API_KEY: 'integration-test-key',
   });
 
   try {
@@ -287,13 +391,34 @@ async function main(): Promise<void> {
       sessionId,
     );
     const toolsJson = await readJsonRpcBody(toolsResponse);
-    const toolNames = toolsJson.result.tools.map((tool: { name: string }) => tool.name).sort();
+    assert.ok(Array.isArray(toolsJson.result?.tools), 'expected tools/list tools array');
+    const tools = toolsJson.result.tools as Array<{
+      name: string;
+      title?: string;
+      description?: unknown;
+      annotations?: Record<string, unknown>;
+      outputSchema?: Record<string, unknown>;
+      inputSchema?: {
+        required?: unknown;
+      } & Record<string, unknown>;
+    }>; // checked: tools/list returned an array; field-specific assertions follow.
+    const toolNames = tools.map((tool) => tool.name).sort();
     assert.deepEqual(toolNames, [...TOOL_NAMES].sort());
     assert.ok(
-      toolsJson.result.tools.every((tool: { description?: unknown }) => (
+      tools.every((tool) => (
         typeof tool.description === 'string' && tool.description.length > 0
       )),
       'expected every tool to expose a description',
+    );
+    const scrapeLinksTool = tools.find((tool) => tool.name === 'scrape-links');
+    assert.ok(scrapeLinksTool?.inputSchema, 'expected scrape-links inputSchema');
+    const scrapeLinksRequired = scrapeLinksTool.inputSchema.required;
+    assert.ok(Array.isArray(scrapeLinksRequired), 'expected scrape-links inputSchema.required array');
+    assert.ok(scrapeLinksRequired.includes('urls'), 'expected scrape-links to require urls');
+    assert.equal(
+      scrapeLinksRequired.includes('extract'),
+      false,
+      'scrape-links extract must be optional for raw mode',
     );
 
     const promptsJson = await readJsonRpcBody(await postJsonRpc(
@@ -353,13 +478,7 @@ async function main(): Promise<void> {
       'openWorldHint',
     ] as const;
 
-    for (const tool of toolsJson.result.tools as Array<{
-      name: string;
-      title?: string;
-      annotations?: Record<string, unknown>;
-      outputSchema?: Record<string, unknown>;
-      inputSchema?: Record<string, unknown>;
-    }>) {
+    for (const tool of tools) {
       assert.ok(
         typeof tool.title === 'string' && tool.title.length > 0,
         `${tool.name}: expected a non-empty title`,
@@ -518,14 +637,22 @@ async function main(): Promise<void> {
       'web-search missing extract',
     );
 
-    // scrape-links: requires urls + extract
+    // scrape-links: requires urls; extract is optional for v6 raw mode.
     assertToolInputRejected(
       await callTool(baseUrl, sessionId, 'scrape-links', { urls: [], extract: 'test data' }, 13),
       'scrape-links empty URLs',
     );
-    assertToolInputRejected(
-      await callTool(baseUrl, sessionId, 'scrape-links', { urls: ['https://example.com'] }, 13),
-      'scrape-links missing extract',
+    const rawScrapeWithoutExtract = await callTool(
+      baseUrl,
+      sessionId,
+      'scrape-links',
+      { urls: ['https://example.com'] },
+      13,
+    );
+    assert.ok(rawScrapeWithoutExtract.result?.isError, 'expected provider-free raw scrape to fail');
+    assert.ok(
+      JSON.stringify(rawScrapeWithoutExtract.result).includes('SCRAPEDO_API_KEY'),
+      'expected raw scrape without extract to fail for missing scraping capability, not schema validation',
     );
 
     // scrape-links: rejects non-http protocols

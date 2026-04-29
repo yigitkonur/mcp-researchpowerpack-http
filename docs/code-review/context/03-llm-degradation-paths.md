@@ -1,4 +1,8 @@
-# LLM Degradation Paths
+# Archived LLM Degradation Paths (v4/v5)
+
+> **Archive note (v6):** This file describes historical degraded-mode behavior
+> captured before the v6 tool contraction and resilience work. For current
+> behavior, use `AGENTS.md` sections 4-6 and `CHANGELOG.md` v6.
 
 ## Purpose
 

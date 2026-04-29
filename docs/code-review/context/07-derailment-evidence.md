@@ -1,4 +1,8 @@
-# Derailment Evidence
+# Archived Derailment Evidence (v4/v5)
+
+> **Archive note (v6):** This friction log came from a live run against the
+> old surface. It explains why later v6 revisions happened, but it is not
+> current operating guidance.
 
 ## Purpose
 

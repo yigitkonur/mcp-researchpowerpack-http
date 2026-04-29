@@ -14,7 +14,7 @@ Key design contracts (v6):
 - `web-search` accepts `scope: "web" | "reddit" | "both"`. The previous `search-reddit` tool was replaced by `scope: "reddit"` — do not re-add it.
 - Tool discovery is description-led. There is no bootstrap gate — `start-research` is a strong recommendation via tool description, not a runtime precondition.
 
-**Live deployment:** `https://research.yigitkonur.com/mcp` (Manufact Cloud, `deploymentId: 4aab46b4-2b02-4879-a648-2516bde49373`, org `primary-2e5b3ad6`).
+**Live deployment:** `https://research.yigitkonur.com/mcp` (Manufact Cloud, `deploymentId: 68d82e47-4f37-44af-b599-b5b686a9593a`, org `primary-2e5b3ad6`; tracked in `.mcp-use/project.json`).
 
 ---
 
@@ -378,7 +378,7 @@ The `start-research` tool body starts with an install hint that links back to th
 
 ## 14. Agent operating loop
 
-1. **Read** — this file, `CHANGELOG.md`, and the relevant `docs/code-review/context/*` doc for the area you are touching.
+1. **Read** — this file, `CHANGELOG.md`, and `README.md`. Treat `docs/code-review/context/*` as archived v4/v5 review evidence unless a task explicitly asks you to update or quote that history.
 2. **Plan** — write a task list (max 30 tasks, one active at a time, every task ends with `commit changes`). Outcome-first names.
 3. **Implement** — strict mode, kebab-case tool names, never throw from tool handlers, route failures through `toolFailure(...)`.
 4. **Verify locally** — typecheck + unit + http per §11.
@@ -405,12 +405,11 @@ The `start-research` tool body starts with an install hint that links back to th
 
 | Need | File |
 |---|---|
-| Architecture map | `docs/code-review/context/01-server-architecture-map.md` |
-| Current tool surface | `docs/code-review/context/02-current-tool-surface.md` |
-| LLM degradation paths | `docs/code-review/context/03-llm-degradation-paths.md` |
-| Session + workflow state lifecycle | `docs/code-review/context/04-session-and-workflow-state.md` |
-| Output formatting patterns | `docs/code-review/context/05-output-formatting-patterns.md` |
-| mcp-use best practices | `docs/code-review/context/06-mcp-use-best-practices-primer.md` |
-| Derailment evidence driving revisions | `docs/code-review/context/07-derailment-evidence.md` |
+| Current architecture and tool contract | `AGENTS.md` sections 1-8 |
+| Deploy and verification contract | `AGENTS.md` sections 10-12 |
 | Public README | `README.md` |
 | Env template | `.env.example` |
+
+The `docs/code-review/context/*.md` files are archived v4/v5 review evidence.
+They intentionally remain available for historical context, but they are not
+current contributor guidance and must not be used as the v6 tool contract.

@@ -96,6 +96,16 @@ export const webSearchOutputSchema = z.object({
       }))
       .optional()
       .describe('On-empty retries — Phase B relaxations applied after the initial Serper batch returned 0 results for a query.'),
+    retry_error: z
+      .object({
+        phase: z.literal('relax-retry').describe('Retry phase that failed after the initial batch succeeded.'),
+        code: z.string().describe('Structured error code from the retry batch.'),
+        message: z.string().describe('Provider error message from the retry batch.'),
+        retryable: z.boolean().describe('Whether the retry-batch provider failure is retryable.'),
+        statusCode: z.number().int().optional().describe('Provider status code when available.'),
+      })
+      .optional()
+      .describe('Non-fatal failure from the relaxed retry batch; initial search results were preserved.'),
   }).strict(),
 }).strict();
 

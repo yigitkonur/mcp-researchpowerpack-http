@@ -91,7 +91,7 @@ export interface Capabilities {
   reddit: boolean;        // REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET
   search: boolean;        // SERPER_API_KEY
   scraping: boolean;      // SCRAPEDO_API_KEY
-  llmExtraction: boolean; // LLM_API_KEY
+  llmExtraction: boolean; // LLM_API_KEY + LLM_BASE_URL + LLM_MODEL
 }
 
 export function getCapabilities(): Capabilities {
@@ -100,7 +100,7 @@ export function getCapabilities(): Capabilities {
     reddit: !!(env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET),
     search: !!env.SEARCH_API_KEY,
     scraping: !!env.SCRAPER_API_KEY,
-    llmExtraction: !!LLM_EXTRACTION.API_KEY,
+    llmExtraction: getLLMConfigStatus().configured,
   };
 }
 
@@ -182,6 +182,40 @@ interface LlmExtractionConfig {
   readonly FALLBACK_MODEL: string;
   readonly BASE_URL: string;
   readonly API_KEY: string;
+}
+
+export type LLMRequiredEnvVar = 'LLM_API_KEY' | 'LLM_BASE_URL' | 'LLM_MODEL';
+
+export interface LLMConfigStatus {
+  readonly configured: boolean;
+  readonly apiKeyPresent: boolean;
+  readonly baseUrlPresent: boolean;
+  readonly modelPresent: boolean;
+  readonly missingVars: readonly LLMRequiredEnvVar[];
+  readonly error: string | null;
+}
+
+export function getLLMConfigStatus(): LLMConfigStatus {
+  const apiKeyPresent = !!process.env.LLM_API_KEY?.trim();
+  const baseUrlPresent = !!process.env.LLM_BASE_URL?.trim();
+  const modelPresent = !!process.env.LLM_MODEL?.trim();
+  const missingVars: LLMRequiredEnvVar[] = [];
+
+  if (!apiKeyPresent) missingVars.push('LLM_API_KEY');
+  if (!baseUrlPresent) missingVars.push('LLM_BASE_URL');
+  if (!modelPresent) missingVars.push('LLM_MODEL');
+
+  const configured = missingVars.length === 0;
+  return {
+    configured,
+    apiKeyPresent,
+    baseUrlPresent,
+    modelPresent,
+    missingVars,
+    error: configured
+      ? null
+      : `LLM disabled: missing ${missingVars.join(', ')}`,
+  };
 }
 
 let cachedLlmExtraction: LlmExtractionConfig | null = null;

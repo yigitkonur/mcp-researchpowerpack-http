@@ -3,6 +3,10 @@ import test from 'node:test';
 
 import { buildDegradedStub, buildStaticScaffolding } from '../src/tools/start-research.js';
 
+const CANONICAL_RUN_RESEARCH_INSTALL_COMMAND =
+  'npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /run-research';
+const RUN_RESEARCH_HINT_TEXT = 'Pair this server with the `run-research` skill';
+
 test('degraded stub is dramatically shorter than full playbook', () => {
   const stub = buildDegradedStub('compare X to Y');
   const playbook = buildStaticScaffolding('compare X to Y');
@@ -42,12 +46,18 @@ test('degraded stub uses focus line when goal is provided', () => {
   assert.match(stub, /Focus for this session: investigate auth flows/);
 });
 
-test('both stub and full playbook surface the run-research skill install hint', () => {
+test('both stub and full playbook start with the canonical run-research skill install hint', () => {
   const stub = buildDegradedStub();
   const playbook = buildStaticScaffolding();
   for (const out of [stub, playbook]) {
+    assert.ok(out.startsWith('> '), 'expected the skill install hint block to be first');
+    assert.ok(
+      out.slice(0, 200).includes(RUN_RESEARCH_HINT_TEXT),
+      'expected the first block to name the run-research skill',
+    );
     assert.match(out, /run-research/, 'expected skill name in install hint');
     assert.match(out, /npx -y skills add/);
-    assert.match(out, /yigitkonur\/skills-by-yigitkonur\/skills\/run-research/);
+    assert.match(out, /https:\/\/github\.com\/yigitkonur\/skills-by-yigitkonur --skill \/run-research/);
+    assert.ok(out.includes(CANONICAL_RUN_RESEARCH_INSTALL_COMMAND));
   }
 });

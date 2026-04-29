@@ -21,6 +21,7 @@ const HAS_BOOLEAN_GROUPING = /\b(?:OR|AND)\b|[()]/;
 const OPERATOR_CHAR_IN_PHRASE = /[():[\]]/;
 const OPERATOR_CHAR_GLOBAL = /[():[\]]/g;
 const PATH_LIKE_IN_PHRASE = /\/|~\/|^@|\.{3,}/;
+const URI_SCHEME_IN_PHRASE = /^[a-z][a-z0-9+.-]*:/i;
 const HAS_SITE_OPERATOR = /\bsite:\S+/i;
 const SITE_OPERATOR_GLOBAL = /\bsite:\S+/gi;
 
@@ -33,6 +34,10 @@ export interface RewriteResult {
 interface PhraseSeg { type: 'phrase'; text: string; quoted: boolean }
 interface RawSeg { type: 'raw'; text: string }
 type Seg = PhraseSeg | RawSeg;
+
+function renderSeg(seg: Seg): string {
+  return seg.type === 'raw' ? seg.text : seg.quoted ? `"${seg.text}"` : seg.text;
+}
 
 function tokenize(query: string): Seg[] {
   const segs: Seg[] = [];
@@ -50,10 +55,69 @@ function tokenize(query: string): Seg[] {
 
 function rebuild(segs: Seg[]): string {
   return segs
-    .map((s) => (s.type === 'raw' ? s.text : s.quoted ? `"${s.text}"` : s.text))
+    .map(renderSeg)
     .join('')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function onlyWhitespaceBetween(segs: Seg[], fromIndex: number, toIndex: number): boolean {
+  for (let i = fromIndex + 1; i < toIndex; i += 1) {
+    const seg = segs[i];
+    if (seg === undefined) continue;
+    if (seg.type !== 'raw' || seg.text.trim() !== '') {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildAnchoredOrGroup(segs: Seg[], quotedIndices: number[]): string | null {
+  const groupStart = quotedIndices[1];
+  const groupEnd = quotedIndices[quotedIndices.length - 1];
+  if (groupStart === undefined || groupEnd === undefined) {
+    return null;
+  }
+
+  for (let i = 2; i < quotedIndices.length; i += 1) {
+    const previous = quotedIndices[i - 1];
+    const current = quotedIndices[i];
+    if (
+      previous === undefined
+      || current === undefined
+      || !onlyWhitespaceBetween(segs, previous, current)
+    ) {
+      return null;
+    }
+  }
+
+  const groupIndices = new Set(quotedIndices.slice(1));
+  const parts: string[] = [];
+  for (let i = 0; i < segs.length; i += 1) {
+    const seg = segs[i];
+    if (seg === undefined) continue;
+
+    if (seg.type === 'raw') {
+      if (i > groupStart && i < groupEnd) {
+        continue;
+      }
+      parts.push(seg.text);
+      continue;
+    }
+
+    if (groupIndices.has(i)) {
+      parts.push(i === groupStart ? ' (' : ' OR ');
+      parts.push(renderSeg(seg));
+      if (i === groupEnd) {
+        parts.push(')');
+      }
+      continue;
+    }
+
+    parts.push(renderSeg(seg));
+  }
+
+  return parts.join('').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -63,12 +127,12 @@ function rebuild(segs: Seg[]): string {
  *
  * Rule A1: phrase contains `(`, `)`, `:`, `[`, `]` → drop quotes; replace those
  *          chars with space (Google strips them inside quotes anyway).
- * Rule A2: phrase contains `/`, `~/`, leading `@`, or 3+ dots → drop quotes only
- *          (Google tokenizes path separators in or out of quotes).
+ * Rule A2: phrase contains a URI scheme, `/`, `~/`, leading `@`, or 3+ dots
+ *          → drop quotes only (Google tokenizes path separators in or out of quotes).
  * Rule A3: ≥3 still-quoted phrases AND no existing `OR`/`AND`/parens → keep
- *          first phrase as anchor; replace whitespace between consecutive
- *          subsequent phrases with ` OR `. Bare words and `site:`/`filetype:`
- *          operators are preserved verbatim.
+ *          first phrase as anchor; group consecutive subsequent phrases with
+ *          ` OR `. Bare words and `site:`/`filetype:` operators are preserved
+ *          verbatim.
  */
 export function normalizeQueryForDispatch(query: string): RewriteResult {
   const original = query.trim().replace(/\s+/g, ' ');
@@ -80,7 +144,12 @@ export function normalizeQueryForDispatch(query: string): RewriteResult {
 
   // A1 — operator chars inside quotes are pointless AND constraints.
   for (const s of segs) {
-    if (s.type === 'phrase' && s.quoted && OPERATOR_CHAR_IN_PHRASE.test(s.text)) {
+    if (
+      s.type === 'phrase'
+      && s.quoted
+      && OPERATOR_CHAR_IN_PHRASE.test(s.text)
+      && !URI_SCHEME_IN_PHRASE.test(s.text)
+    ) {
       s.quoted = false;
       s.text = s.text.replace(OPERATOR_CHAR_GLOBAL, ' ');
       if (!rules.includes('A1')) rules.push('A1');
@@ -89,7 +158,11 @@ export function normalizeQueryForDispatch(query: string): RewriteResult {
 
   // A2 — path/URL inside quotes; quoting doesn't help recall.
   for (const s of segs) {
-    if (s.type === 'phrase' && s.quoted && PATH_LIKE_IN_PHRASE.test(s.text)) {
+    if (
+      s.type === 'phrase'
+      && s.quoted
+      && (URI_SCHEME_IN_PHRASE.test(s.text) || PATH_LIKE_IN_PHRASE.test(s.text))
+    ) {
       s.quoted = false;
       if (!rules.includes('A2')) rules.push('A2');
     }
@@ -97,31 +170,24 @@ export function normalizeQueryForDispatch(query: string): RewriteResult {
 
   // A3 — phrase-AND collapse. Trigger requires ≥3 phrases that survive A1+A2,
   // and no existing boolean grouping in the raw (non-quoted) part of the query.
-  const stillQuoted = segs.filter(
-    (s): s is PhraseSeg => s.type === 'phrase' && s.quoted,
-  );
+  const stillQuotedIndices: number[] = [];
+  for (let i = 0; i < segs.length; i += 1) {
+    const seg = segs[i];
+    if (seg?.type === 'phrase' && seg.quoted) {
+      stillQuotedIndices.push(i);
+    }
+  }
   const rawJoined = segs
     .filter((s): s is RawSeg => s.type === 'raw')
     .map((s) => s.text)
     .join(' ');
 
-  if (stillQuoted.length >= 3 && !HAS_BOOLEAN_GROUPING.test(rawJoined)) {
-    let phraseCount = 0;
-    let modified = false;
-    for (let i = 0; i < segs.length; i += 1) {
-      const s = segs[i];
-      if (s && s.type === 'phrase' && s.quoted) {
-        phraseCount += 1;
-        if (phraseCount >= 3) {
-          const prev = segs[i - 1];
-          if (prev && prev.type === 'raw' && prev.text.trim() === '') {
-            prev.text = ' OR ';
-            modified = true;
-          }
-        }
-      }
+  if (stillQuotedIndices.length >= 3 && !HAS_BOOLEAN_GROUPING.test(rawJoined)) {
+    const grouped = buildAnchoredOrGroup(segs, stillQuotedIndices);
+    if (grouped !== null) {
+      rules.push('A3');
+      return { rewritten: grouped, changed: grouped !== original, rules };
     }
-    if (modified) rules.push('A3');
   }
 
   const rewritten = rebuild(segs);
@@ -139,11 +205,15 @@ export function normalizeQueryForDispatch(query: string): RewriteResult {
  * Rule B2: drop `site:operator` (broadens to open web; catches "tiny corpus"
  *          and "site path doesn't exist" cases at once).
  */
-export function relaxQueryForRetry(query: string): RewriteResult {
+export function relaxQueryForRetry(
+  query: string,
+  options: { dropSite?: boolean } = {},
+): RewriteResult {
   const original = query.trim().replace(/\s+/g, ' ');
   if (!original) {
     return { rewritten: original, changed: false, rules: [] };
   }
+  const dropSite = options.dropSite ?? true;
   const rules: string[] = [];
   let result = query;
 
@@ -152,7 +222,7 @@ export function relaxQueryForRetry(query: string): RewriteResult {
     rules.push('B1');
   }
 
-  if (HAS_SITE_OPERATOR.test(result)) {
+  if (dropSite && HAS_SITE_OPERATOR.test(result)) {
     result = result.replace(SITE_OPERATOR_GLOBAL, ' ');
     rules.push('B2');
   }

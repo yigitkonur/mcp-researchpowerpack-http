@@ -5,8 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-This is a self-hosted MCP server. Install from npm or clone the repo and
-deploy it to your own infrastructure — there is no canonical hosted instance.
+This server has a hosted deployment at `https://research.yigitkonur.com/mcp`.
+You can also install from npm or clone the repo and deploy it to your own
+infrastructure.
+
+## [6.0.10] - 2026-04-23
+
+**Current v6 contract.** The server is now a 3-tool, description-led research
+MCP server: `start-research`, `web-search`, and `scrape-links`.
+
+### Changed
+
+- **3-tool surface.** `get-reddit-post` was merged into `scrape-links`.
+  Reddit post permalinks (`reddit.com/r/.../comments/...`) are auto-detected
+  and routed through the Reddit API for threaded post + comment extraction.
+  `search-reddit` remains replaced by `web-search` with
+  `scope: "reddit"` or `scope: "both"`.
+- **No bootstrap gate.** `start-research` is still strongly recommended and its
+  tool description asks agents to call it first, but other tools no longer
+  require a prior `start-research` call. The old workflow-state store is gone;
+  each tool call is independent.
+- **Document routing in `scrape-links`.** PDF / DOCX / PPTX / XLSX URLs route
+  through Jina Reader (`r.jina.ai`) before any Scrape.do call. If a normal web
+  URL returns a binary document content type through Scrape.do, the handler
+  reroutes that URL through Jina instead of returning binary garbage.
+- **LLM resilience.** LLM config is `LLM_API_KEY` + `LLM_BASE_URL` +
+  `LLM_MODEL`, with optional `LLM_FALLBACK_MODEL`. Requests use low reasoning,
+  bounded retries, stall protection, per-request deadlines, and fallback-model
+  routing for oversized or context-window failures.
+- **Hosted and self-hosted wording.** The public hosted URL is
+  `https://research.yigitkonur.com/mcp`; self-hosting remains supported via
+  npm/source installs.
+- **Run-research install hint.** `start-research` points agents at the current
+  skill install command:
+  `npx -y skills add -y -g https://github.com/yigitkonur/skills-by-yigitkonur --skill /run-research`.
 
 ## [5.0.0] - 2026-04-18
 

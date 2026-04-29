@@ -175,7 +175,48 @@ function hasStatus(error: unknown): error is { status: number } {
 
 let llmClient: OpenAI | null = null;
 
-type OpenAITextGenerator = Pick<OpenAI, 'chat'>;
+interface ChatCompletionTextResponse {
+  readonly choices?: ReadonlyArray<{
+    readonly message?: {
+      readonly content?: string | null;
+    } | null;
+  } | null>;
+}
+
+export interface OpenAITextGenerator {
+  readonly chat: {
+    readonly completions: {
+      readonly create: (
+        body: OpenAI.ChatCompletionCreateParamsNonStreaming,
+        options: { readonly signal?: AbortSignal; readonly timeout: number },
+      ) => Promise<ChatCompletionTextResponse>;
+    };
+  };
+}
+
+interface LLMTextSuccess {
+  readonly content: string;
+  readonly model: string;
+}
+
+interface LLMTextEmptyFailure {
+  readonly content: null;
+  readonly model: string;
+  readonly error: string;
+  readonly failureKind: 'empty';
+}
+
+interface LLMTextProviderFailure {
+  readonly content: null;
+  readonly model: string;
+  readonly error: string;
+  readonly failureKind: 'provider';
+  readonly errorCause: unknown;
+}
+
+type LLMTextFailure = LLMTextEmptyFailure | LLMTextProviderFailure;
+
+export type LLMTextResponse = LLMTextSuccess | LLMTextFailure;
 
 export function createLLMProcessor(): OpenAI | null {
   if (!getCapabilities().llmExtraction) return null;
@@ -201,13 +242,36 @@ function buildChatRequestBody(model: string, prompt: string): Record<string, unk
   };
 }
 
+function normalizeProviderError(err: unknown, message: string): unknown {
+  if (typeof err === 'object' && err !== null) return err;
+  return new Error(message);
+}
+
+function getProviderFailure(response: LLMTextResponse): unknown | null {
+  if (response.content !== null || response.failureKind !== 'provider') return null;
+  return response.errorCause;
+}
+
+function emptyLLMExtractionResult(content: string): LLMResult {
+  return {
+    content,
+    processed: false,
+    error: 'LLM returned empty response',
+    errorDetails: {
+      code: ErrorCode.INTERNAL_ERROR,
+      message: 'LLM returned empty response',
+      retryable: false,
+    },
+  };
+}
+
 export async function requestText(
   processor: OpenAITextGenerator,
   prompt: string,
   operationLabel: string,
   signal?: AbortSignal,
   modelOverride?: string,
-): Promise<{ content: string | null; model: string; error?: string }> {
+): Promise<LLMTextResponse> {
   const model = modelOverride || LLM_EXTRACTION.MODEL;
 
   try {
@@ -231,11 +295,17 @@ export async function requestText(
 
     const err = `Empty response from model ${model}`;
     mcpLog('warning', `${operationLabel} returned empty content for model ${model}`, 'llm');
-    return { content: null, model, error: err };
+    return { content: null, model, error: err, failureKind: 'empty' };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     mcpLog('warning', `${operationLabel} failed for model ${model}: ${message}`, 'llm');
-    return { content: null, model, error: message };
+    return {
+      content: null,
+      model,
+      error: message,
+      failureKind: 'provider',
+      errorCause: normalizeProviderError(err, message),
+    };
   }
 }
 
@@ -250,16 +320,16 @@ export async function requestTextWithFallback(
   prompt: string,
   operationLabel: string,
   signal?: AbortSignal,
-): Promise<{ content: string | null; model: string; error?: string }> {
+): Promise<LLMTextResponse> {
   const primary = await requestText(processor, prompt, operationLabel, signal);
-  if (primary.content) return primary;
+  if (primary.content !== null) return primary;
 
   const fallbackModel = LLM_EXTRACTION.FALLBACK_MODEL;
   if (!fallbackModel) return primary;
 
   mcpLog('warning', `Primary model failed, switching to fallback ${fallbackModel}`, 'llm');
 
-  let lastError = primary.error;
+  let lastFailure: LLMTextFailure = primary;
   for (let attempt = 0; attempt < FALLBACK_RETRY_COUNT; attempt++) {
     if (attempt > 0) {
       const delayMs = calculateLLMBackoff(attempt - 1);
@@ -267,11 +337,11 @@ export async function requestTextWithFallback(
       try { await sleep(delayMs, signal); } catch { break; }
     }
     const result = await requestText(processor, prompt, `${operationLabel} [fallback]`, signal, fallbackModel);
-    if (result.content) return result;
-    lastError = result.error;
+    if (result.content !== null) return result;
+    lastFailure = result;
   }
 
-  return { content: null, model: fallbackModel, error: lastError };
+  return lastFailure;
 }
 
 /**
@@ -378,7 +448,7 @@ function calculateLLMBackoff(attempt: number): number {
 export async function processContentWithLLM(
   content: string,
   config: ProcessingConfig,
-  processor?: OpenAI | null,
+  processor?: OpenAITextGenerator | null,
   signal?: AbortSignal
 ): Promise<LLMResult> {
   // Early returns for invalid/skip conditions
@@ -508,25 +578,21 @@ ${truncatedContent}`;
 
         const response = await requestText(processor, prompt, 'LLM extraction', signal);
 
-        if (response.content) {
+        if (response.content !== null) {
           mcpLog('info', `Successfully extracted ${response.content.length} characters`, 'llm');
           markLLMSuccess('extractor');
           return { content: response.content, processed: true };
         }
 
+        const providerFailure = getProviderFailure(response);
+        if (providerFailure) {
+          throw providerFailure;
+        }
+
         // Empty response — not retryable
         mcpLog('warning', 'Received empty response from LLM', 'llm');
         markLLMFailure('extractor', 'LLM returned empty response');
-        return {
-          content,
-          processed: false,
-          error: 'LLM returned empty response',
-          errorDetails: {
-            code: ErrorCode.INTERNAL_ERROR,
-            message: 'LLM returned empty response',
-            retryable: false,
-          },
-        };
+        return emptyLLMExtractionResult(content);
 
       } catch (err: unknown) {
         lastError = classifyError(err);
@@ -566,13 +632,20 @@ ${truncatedContent}`;
       }
       try {
         const response = await requestText(processor, prompt, 'LLM extraction [fallback]', signal, fallbackModel);
-        if (response.content) {
+        if (response.content !== null) {
           mcpLog('info', `Fallback extracted ${response.content.length} characters`, 'llm');
           markLLMSuccess('extractor');
           return { content: response.content, processed: true };
         }
+
+        const providerFailure = getProviderFailure(response);
+        if (providerFailure) {
+          throw providerFailure;
+        }
+
         mcpLog('warning', 'Fallback returned empty response', 'llm');
-        break;
+        markLLMFailure('extractor', 'LLM returned empty response');
+        return emptyLLMExtractionResult(content);
       } catch (err: unknown) {
         lastError = classifyError(err);
         mcpLog('error', `Fallback error (attempt ${attempt + 1}): ${lastError.message}`, 'llm');
@@ -762,7 +835,7 @@ ${lines.join('\n')}`;
       'Search classification',
     );
 
-    if (!response.content) {
+    if (response.content === null) {
       const errMsg = response.error ?? 'LLM returned empty classification response';
       markLLMFailure('planner', errMsg);
       return { result: null, error: errMsg };
@@ -844,7 +917,7 @@ RULES:
       'Raw-mode refine query generation',
     );
 
-    if (!response.content) {
+    if (response.content === null) {
       const errMsg = response.error ?? 'LLM returned empty raw-mode refine query response';
       markLLMFailure('planner', errMsg);
       return { result: [], error: errMsg };
@@ -1012,7 +1085,7 @@ freshness_window:
       signal,
     );
 
-    if (!response.content) {
+    if (response.content === null) {
       mcpLog('warning', `Research brief generation returned no content: ${response.error ?? 'unknown'}`, 'llm');
       markLLMFailure('planner', response.error ?? 'empty response');
       return null;

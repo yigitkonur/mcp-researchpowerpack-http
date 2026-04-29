@@ -3,10 +3,52 @@ import test from 'node:test';
 
 import {
   _resetLLMHealthForTests,
+  createLLMProcessor,
   getLLMHealth,
   markLLMFailure,
   markLLMSuccess,
 } from '../src/services/llm-processor.js';
+import {
+  getCapabilities,
+  getLLMConfigStatus,
+} from '../src/config/index.js';
+
+const LLM_ENV_KEYS = [
+  'LLM_API_KEY',
+  'LLM_BASE_URL',
+  'LLM_MODEL',
+  'LLM_FALLBACK_MODEL',
+] as const;
+
+function withLlmEnv<T>(
+  env: Partial<Record<(typeof LLM_ENV_KEYS)[number], string>>,
+  fn: () => T,
+): T {
+  const saved: Partial<Record<(typeof LLM_ENV_KEYS)[number], string>> = {};
+  for (const key of LLM_ENV_KEYS) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    for (const key of LLM_ENV_KEYS) {
+      const value = saved[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
 
 test('getLLMHealth defaults: both paths report not-yet-checked', () => {
   _resetLLMHealthForTests();
@@ -56,6 +98,53 @@ test('plannerConfigured / extractorConfigured reflect env capability', () => {
   // Field is present and boolean regardless of env at test time.
   assert.equal(typeof h.plannerConfigured, 'boolean');
   assert.equal(typeof h.extractorConfigured, 'boolean');
+});
+
+test('LLM_API_KEY-only config is reported disabled without throwing', () => {
+  withLlmEnv({ LLM_API_KEY: 'test-key' }, () => {
+    assert.doesNotThrow(() => getCapabilities());
+
+    const status = getLLMConfigStatus();
+    assert.equal(status.configured, false);
+    assert.equal(status.apiKeyPresent, true);
+    assert.equal(status.baseUrlPresent, false);
+    assert.equal(status.modelPresent, false);
+    assert.deepEqual(status.missingVars, ['LLM_BASE_URL', 'LLM_MODEL']);
+    assert.match(status.error ?? '', /LLM_BASE_URL, LLM_MODEL/);
+
+    const capabilities = getCapabilities();
+    assert.equal(capabilities.llmExtraction, false);
+
+    const h = getLLMHealth();
+    assert.equal(h.plannerConfigured, false);
+    assert.equal(h.extractorConfigured, false);
+    assert.equal(createLLMProcessor(), null);
+  });
+});
+
+test('complete LLM config is reported enabled', () => {
+  withLlmEnv({
+    LLM_API_KEY: 'test-key',
+    LLM_BASE_URL: 'https://llm.example.test/v1',
+    LLM_MODEL: 'test-model',
+  }, () => {
+    assert.doesNotThrow(() => getCapabilities());
+
+    const status = getLLMConfigStatus();
+    assert.equal(status.configured, true);
+    assert.equal(status.apiKeyPresent, true);
+    assert.equal(status.baseUrlPresent, true);
+    assert.equal(status.modelPresent, true);
+    assert.deepEqual(status.missingVars, []);
+    assert.equal(status.error, null);
+
+    const capabilities = getCapabilities();
+    assert.equal(capabilities.llmExtraction, true);
+
+    const h = getLLMHealth();
+    assert.equal(h.plannerConfigured, true);
+    assert.equal(h.extractorConfigured, true);
+  });
 });
 
 test('consecutive-failure counters start at 0', () => {

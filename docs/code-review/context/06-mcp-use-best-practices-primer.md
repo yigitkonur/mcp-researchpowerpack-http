@@ -1,4 +1,9 @@
-# mcp-use Best Practices Primer
+# Archived mcp-use Best Practices Primer (v4/v5)
+
+> **Archive note (v6):** This primer was written against the old 5-tool and
+> bootstrap-gated design. It remains useful as historical review context only;
+> do not treat its anti-pattern list as current v6 truth without checking
+> current source and `AGENTS.md`.
 
 ## Purpose
 
