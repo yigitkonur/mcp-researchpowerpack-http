@@ -125,7 +125,12 @@ async function executeWithRelaxRetry(
   reporter: ToolReporter,
   searchExecutor: SearchExecutor = executeSearches,
   retryOptions: { readonly dropSiteOnRetry?: readonly boolean[] } = {},
-): Promise<{ response: SearchResponse; retried: RetriedQueryRecord[]; failurePhase?: SearchFailurePhase }> {
+): Promise<{
+  response: SearchResponse;
+  retried: RetriedQueryRecord[];
+  failurePhase?: SearchFailurePhase;
+  retryError?: StructuredError;
+}> {
   const initial = await searchExecutor(dispatched);
 
   if (initial.error) {
@@ -181,10 +186,19 @@ async function executeWithRelaxRetry(
   });
 
   if (retryResp.error) {
+    mcpLog(
+      'warning',
+      `Relaxed retry batch failed; preserving initial search results: ${retryResp.error.message}`,
+      'search',
+    );
+    await reporter.log(
+      'warning',
+      `search_relax_retry_failed: ${retryResp.error.message}`,
+    );
     return {
-      response: { ...initial, error: retryResp.error },
+      response: initial,
       retried,
-      failurePhase: 'relax-retry',
+      retryError: retryResp.error,
     };
   }
 
@@ -531,6 +545,7 @@ function buildMetadata(
   llmError?: string,
   queryRewrites?: QueryRewriteRecord[],
   retriedQueries?: RetriedQueryRecord[],
+  retryError?: StructuredError,
 ) {
   const coverageSummary = searches.map(s => {
     let topDomain: string | undefined;
@@ -557,6 +572,17 @@ function buildMetadata(
     ...(lowYieldQueries.length > 0 ? { low_yield_queries: lowYieldQueries } : {}),
     ...(queryRewrites && queryRewrites.length > 0 ? { query_rewrites: queryRewrites } : {}),
     ...(retriedQueries && retriedQueries.length > 0 ? { retried_queries: retriedQueries } : {}),
+    ...(retryError
+      ? {
+          retry_error: {
+            phase: 'relax-retry' as const,
+            code: retryError.code,
+            message: retryError.message,
+            retryable: retryError.retryable,
+            ...(typeof retryError.statusCode === 'number' ? { statusCode: retryError.statusCode } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -698,7 +724,12 @@ export async function handleWebSearch(
     // Phase B — on-empty retry: any query returning 0 results gets one
     // relaxed retry (drop quotes, drop site:). Recovered hits replace the
     // empty slot transparently.
-    const { response: rawResponse, retried: retriedQueries, failurePhase } = await executeWithRelaxRetry(
+    const {
+      response: rawResponse,
+      retried: retriedQueries,
+      failurePhase,
+      retryError,
+    } = await executeWithRelaxRetry(
       dispatchedQueries,
       reporter,
       searchExecutor,
@@ -788,7 +819,7 @@ export async function handleWebSearch(
     const executionTime = Date.now() - startTime;
     const metadata = buildMetadata(
       aggregation, executionTime, response.totalQueries, response.searches, llmClassified, params.scope, llmError,
-      queryRewrites, retriedQueries,
+      queryRewrites, retriedQueries, retryError,
     );
 
     // Build per-row structured results so capability-aware clients can

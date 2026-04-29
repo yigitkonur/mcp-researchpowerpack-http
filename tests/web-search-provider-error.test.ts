@@ -90,7 +90,7 @@ test('handleWebSearch returns toolFailure for initial search provider errors', a
   assert.match(result.content, /Serper API unavailable/);
 });
 
-test('handleWebSearch returns toolFailure when relaxed retry batch fails', async () => {
+test('handleWebSearch preserves initial results when relaxed retry batch fails', async () => {
   const error: StructuredError = {
     code: ErrorCode.RATE_LIMITED,
     message: 'Serper retry batch was rate limited',
@@ -118,14 +118,36 @@ test('handleWebSearch returns toolFailure when relaxed retry batch fails', async
     raw: true,
   });
 
-  const result = await handleWebSearch(params, NOOP_REPORTER, executor);
+  const result = await withoutConfiguredLlm(() => handleWebSearch(params, NOOP_REPORTER, executor));
 
-  assert.equal(result.isError, true);
+  assert.equal(result.isError, false);
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], ['zero exact']);
-  assert.match(result.content, /RATE_LIMITED/);
-  assert.match(result.content, /relaxed retry batch/);
-  assert.match(result.content, /Serper retry batch was rate limited/);
+  assert.match(result.content, /1 unique URLs/);
+  assert.match(result.content, /https:\/\/example\.com\/result/);
+
+  if (!result.isError) {
+    assert.equal(result.structuredContent?.results?.length, 1);
+    assert.equal(result.structuredContent?.metadata.successful, 1);
+    assert.equal(result.structuredContent?.metadata.failed, 1);
+    assert.deepEqual(result.structuredContent?.metadata.low_yield_queries, [
+      'stable query',
+      '"zero exact" site:empty.example',
+    ]);
+    assert.deepEqual(result.structuredContent?.metadata.retried_queries, [{
+      original: '"zero exact" site:empty.example',
+      retried_with: 'zero exact',
+      rules: ['B1', 'B2'],
+      recovered_results: 0,
+    }]);
+    assert.deepEqual(result.structuredContent?.metadata.retry_error, {
+      phase: 'relax-retry',
+      code: ErrorCode.RATE_LIMITED,
+      message: 'Serper retry batch was rate limited',
+      retryable: true,
+      statusCode: 429,
+    });
+  }
 });
 
 test('handleWebSearch keeps legitimate zero-result searches as successful low-yield output', async () => {
