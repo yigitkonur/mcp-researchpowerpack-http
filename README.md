@@ -8,7 +8,7 @@ Built on [mcp-use](https://github.com/nicepkg/mcp-use). No stdio, HTTP only.
 
 | tool | what it does | needs |
 |------|-------------|-------|
-| `start-research` | returns a goal-tailored brief: `primary_branch` (reddit / web / both), exact `first_call_sequence`, 25–50 keyword seeds, iteration hints, gaps to watch, stop criteria. Call FIRST every session. | `LLM_API_KEY` (brief generation) |
+| `start-research` | returns a goal-tailored brief: `primary_branch` (reddit / web / both), exact `first_call_sequence`, 25–50 keyword seeds, iteration hints, gaps to watch, stop criteria. Call FIRST every session. | `LLM_API_KEY` + `LLM_BASE_URL` + `LLM_MODEL` for non-degraded brief generation (optional) |
 | `web-search` | parallel Google search, up to 50 queries per call, parallel-callable across turns. `scope: "web" \| "reddit" \| "both"` — reddit mode filters to post permalinks. Returns tiered markdown (HIGHLY_RELEVANT / MAYBE_RELEVANT / OTHER) + grounded synthesis + gaps + refine suggestions. | `SERPER_API_KEY` |
 | `scrape-links` | fetch URLs in parallel with per-URL LLM extraction. Auto-detects `reddit.com/r/.../comments/` permalinks and routes them through the Reddit API (threaded post + comments); PDF / DOCX / PPTX / XLSX URLs route through Jina Reader; non-reddit, non-document web URLs flow through Scrape.do. Parallel-callable. | `SCRAPEDO_API_KEY` for web URLs (+ `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` for reddit URLs; optional `JINA_API_KEY` for higher document limits) |
 
@@ -69,7 +69,7 @@ Copy `.env.example`, set only what you need. Missing keys don't crash the server
 | `SCRAPEDO_API_KEY` | `scrape-links` for non-reddit, non-document web URLs |
 | `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | `scrape-links` for reddit.com permalinks (threaded post + comments) |
 | `JINA_API_KEY` | optional higher-rate `scrape-links` document conversion for PDF / DOCX / PPTX / XLSX URLs via Jina Reader |
-| `LLM_API_KEY` | goal-tailored brief, AI extraction, search classification, raw-mode refine suggestions |
+| `LLM_API_KEY` + `LLM_BASE_URL` + `LLM_MODEL` | goal-tailored brief, AI extraction, search classification, raw-mode refine suggestions |
 
 ### llm (AI extraction + classification)
 

@@ -1,20 +1,54 @@
 import assert from 'node:assert/strict';
-import test, { beforeEach } from 'node:test';
+import test, { after, before, beforeEach } from 'node:test';
 
 import type { OpenAITextGenerator } from '../src/services/llm-processor.js';
 
 const PRIMARY_MODEL = 'test-primary-model';
 const FALLBACK_MODEL = 'test-fallback-model';
 
-process.env.LLM_API_KEY = 'test-key';
-process.env.LLM_BASE_URL = 'https://llm.example.test/v1';
-process.env.LLM_MODEL = PRIMARY_MODEL;
-process.env.LLM_FALLBACK_MODEL = FALLBACK_MODEL;
+const LLM_ENV_KEYS = [
+  'LLM_API_KEY',
+  'LLM_BASE_URL',
+  'LLM_MODEL',
+  'LLM_FALLBACK_MODEL',
+] as const;
 
-const {
-  _resetLLMHealthForTests,
-  processContentWithLLM,
-} = await import('../src/services/llm-processor.js');
+type LLMEnvKey = (typeof LLM_ENV_KEYS)[number];
+type LLMProcessorModule = typeof import('../src/services/llm-processor.js');
+
+const previousEnv = new Map<LLMEnvKey, string | undefined>(
+  LLM_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
+
+let _resetLLMHealthForTests: LLMProcessorModule['_resetLLMHealthForTests'];
+let processContentWithLLM: LLMProcessorModule['processContentWithLLM'];
+
+function restoreEnv(): void {
+  for (const key of LLM_ENV_KEYS) {
+    const originalValue = previousEnv.get(key);
+    if (originalValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = originalValue;
+    }
+  }
+}
+
+before(async () => {
+  process.env.LLM_API_KEY = 'test-key';
+  process.env.LLM_BASE_URL = 'https://llm.example.test/v1';
+  process.env.LLM_MODEL = PRIMARY_MODEL;
+  process.env.LLM_FALLBACK_MODEL = FALLBACK_MODEL;
+
+  ({
+    _resetLLMHealthForTests,
+    processContentWithLLM,
+  } = await import('../src/services/llm-processor.js'));
+});
+
+after(() => {
+  restoreEnv();
+});
 
 type QueuedOutcome =
   | { readonly kind: 'content'; readonly content: string }

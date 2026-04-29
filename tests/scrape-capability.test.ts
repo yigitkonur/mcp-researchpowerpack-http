@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test, { type TestContext } from 'node:test';
+import test, { afterEach, beforeEach, type TestContext } from 'node:test';
 
 import type { MCPServer } from 'mcp-use/server';
 
@@ -19,9 +19,45 @@ const SCRUBBED_ENV_KEYS = [
   'LLM_FALLBACK_MODEL',
 ] as const;
 
-for (const key of SCRUBBED_ENV_KEYS) {
-  delete process.env[key];
+type ScrubbedEnvKey = (typeof SCRUBBED_ENV_KEYS)[number];
+
+const scrubbedEnvSnapshots = new WeakMap<
+  object,
+  Map<ScrubbedEnvKey, string | undefined>
+>();
+
+function scrubEnvForTest(t: object): void {
+  const snapshot = new Map<ScrubbedEnvKey, string | undefined>();
+  for (const key of SCRUBBED_ENV_KEYS) {
+    snapshot.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  scrubbedEnvSnapshots.set(t, snapshot);
 }
+
+function restoreEnvForTest(t: object): void {
+  const snapshot = scrubbedEnvSnapshots.get(t);
+  if (!snapshot) return;
+
+  for (const key of SCRUBBED_ENV_KEYS) {
+    const originalValue = snapshot.get(key);
+    if (originalValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = originalValue;
+    }
+  }
+
+  scrubbedEnvSnapshots.delete(t);
+}
+
+beforeEach((t) => {
+  scrubEnvForTest(t);
+});
+
+afterEach((t) => {
+  restoreEnvForTest(t);
+});
 
 type FetchArgs = Parameters<typeof fetch>;
 
