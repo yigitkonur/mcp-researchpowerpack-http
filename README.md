@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/yigitkonur-mcp-researchpowerpack-badge.png)](https://mseep.ai/app/yigitkonur-mcp-researchpowerpack)
+
 # mcp-researchpowerpack
 
 HTTP MCP server for research. Three tools, orientation-first, built for agents that run multi-pass research loops.
