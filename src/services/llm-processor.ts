@@ -8,6 +8,7 @@
 
 import OpenAI from 'openai';
 import { LLM_EXTRACTION, getCapabilities } from '../config/index.js';
+import { QUERY_REWRITE_PAIR_GUIDANCE_TEXT } from '../schemas/web-search.js';
 import {
   classifyError,
   sleep,
@@ -1068,7 +1069,10 @@ first_call_sequence:
 
 keyword_seeds:
 - 25–50 total. Narrow bug → fewer. Open synthesis → more.
-- Use operators where helpful (site:, quotes, verbatim version numbers).
+- Write Google retrieval probes, not topic labels.
+- For each broad idea, first do a bad → better rewrite in your head: replace a vague phrase with a query that names the evidence source class, discriminating anchor terms, and one useful operator when possible.
+- ${QUERY_REWRITE_PAIR_GUIDANCE_TEXT}
+- Use operators where helpful (site:, quotes, verbatim version numbers, exact error text, package names, release/version strings).
 - DIVERSE facets — same noun-phrase cannot repeat across seeds with adjectives-only variation.
 - Do NOT invent vendor names you are uncertain exist.
 - For \`site:<domain>\` filters, ONLY use domains you are highly confident are real. Safe choices: \`github.com\`, \`stackoverflow.com\`, \`reddit.com\`, \`news.ycombinator.com\`, \`arxiv.org\`, \`nvd.nist.gov\`, \`pypi.org\`, \`npmjs.com\`, plus any canonical homepage/docs domain explicitly spelled out in the goal itself (e.g. goal names "Cursor" → \`cursor.com\`/\`docs.cursor.com\` is acceptable). If you don't know the product's real docs domain, leave the query open (no \`site:\`) instead of guessing.

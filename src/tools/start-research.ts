@@ -5,6 +5,7 @@ import {
   type StartResearchOutput,
   type StartResearchParams,
 } from '../schemas/start-research.js';
+import { QUERY_REWRITE_PAIR_GUIDANCE_TEXT } from '../schemas/web-search.js';
 import {
   createLLMProcessor,
   generateResearchBrief,
@@ -64,6 +65,8 @@ export function buildStaticScaffolding(goal?: string, opts: { plannerAvailable?:
     '- `"reddit"` → server appends `site:reddit.com` and filters to post permalinks. Use for sentiment / migration / lived experience.',
     '- `"web"` (default) → open web. Use for spec / bug / pricing / CVE / API / primary-source hunts.',
     '- `"both"` → fans each query across both. Use when the topic is opinion-heavy AND needs official sources.',
+    '',
+    `**Query rewrite discipline** — ${QUERY_REWRITE_PAIR_GUIDANCE_TEXT}`,
     '',
     '**3. `scrape-links`** — fetch URLs in parallel and run per-URL LLM extraction. **Auto-detects** `reddit.com/r/.../comments/` permalinks and routes them through the Reddit API (threaded post + comments); everything else flows through the HTTP scraper. Mix Reddit + web URLs freely — both branches run concurrently. **Parallel-safe**: prefer multiple `scrape-links` calls with contextually grouped URLs over one giant mixed batch. Each page returns `## Source`, `## Matches` (verbatim facts), `## Not found` (explicit gaps this page did NOT answer), `## Follow-up signals` (new terms + referenced-but-unscraped URLs that seed your next `web-search` round). Describe extraction SHAPE in `extract`, facets separated by `|`: `root cause | affected versions | fix | workarounds | timeline`.',
     '',
@@ -254,7 +257,7 @@ export function registerStartResearchTool(server: MCPServer): void {
       name: 'start-research',
       title: 'Start Research Session',
       description:
-        'Call this FIRST every research session. Provide a `goal`; I return a goal-tailored brief naming (a) `primary_branch` (reddit for sentiment/migration, web for spec/bug/pricing, both when opinion-heavy AND needs official sources), (b) the exact `first_call_sequence` of web-search + scrape-links calls to fire, (c) 25–50 keyword seeds for your first `web-search` call, (d) iteration hints, (e) gaps to watch, (f) stop criteria. No goal? You still get the generic 3-tool playbook. Other tools work without calling this, but you will use them worse.',
+        `Call this FIRST every research session. Provide a \`goal\`; I return a goal-tailored brief naming (a) \`primary_branch\` (reddit for sentiment/migration, web for spec/bug/pricing, both when opinion-heavy AND needs official sources), (b) the exact \`first_call_sequence\` of web-search + scrape-links calls to fire, (c) 25–50 keyword seeds for your first \`web-search\` call, (d) iteration hints, (e) gaps to watch, (f) stop criteria. ${QUERY_REWRITE_PAIR_GUIDANCE_TEXT} No goal? You still get the generic 3-tool playbook. Other tools work without calling this, but you will use them worse.`,
       schema: startResearchParamsSchema,
       annotations: {
         readOnlyHint: true,

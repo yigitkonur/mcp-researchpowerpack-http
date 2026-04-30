@@ -7,6 +7,7 @@ import type { MCPServer } from 'mcp-use/server';
 
 import { getCapabilities, getMissingEnvMessage } from '../config/index.js';
 import {
+  QUERY_REWRITE_PAIR_GUIDANCE_TEXT,
   webSearchOutputSchema,
   webSearchParamsSchema,
   type WebSearchParams,
@@ -852,7 +853,7 @@ export function registerWebSearchTool(server: MCPServer): void {
       name: 'web-search',
       title: 'Web Search',
       description:
-        'Fan out Google queries in parallel. One call carries up to 50 queries in a flat `queries` array — pack diverse facets (not paraphrases) into a single call. Call me AGGRESSIVELY across a session: 2–4 rounds is normal, 1 is underuse. After each pass, read `gaps[]` + `refine_queries[]` and fire another round with the new terms. Safe to call multiple times in parallel in the same turn for orthogonal subtopics. `scope`: `"reddit"` (server appends `site:reddit.com` + filters to post permalinks — use for sentiment / migration / lived experience), `"web"` default (spec / bug / pricing / CVE / API), `"both"` (fan each query across both — use when opinion-heavy AND needs official sources). Returns a tiered Markdown report (HIGHLY_RELEVANT / MAYBE_RELEVANT / OTHER) + grounded synthesis with `[rank]` citations + `## Gaps` + `## Suggested follow-up searches` tied to gap ids. Set `raw=true` to skip classification.',
+        `Fan out Google queries in parallel. One call carries up to 50 queries in a flat \`queries\` array — pack diverse facets (not paraphrases) into a single call. ${QUERY_REWRITE_PAIR_GUIDANCE_TEXT} Call me AGGRESSIVELY across a session: 2–4 rounds is normal, 1 is underuse. After each pass, read \`gaps[]\` + \`refine_queries[]\` and fire another round with the new terms. Safe to call multiple times in parallel in the same turn for orthogonal subtopics. \`scope\`: \`"reddit"\` (server appends \`site:reddit.com\` + filters to post permalinks — use for sentiment / migration / lived experience), \`"web"\` default (spec / bug / pricing / CVE / API), \`"both"\` (fan each query across both — use when opinion-heavy AND needs official sources). Returns a tiered Markdown report (HIGHLY_RELEVANT / MAYBE_RELEVANT / OTHER) + grounded synthesis with \`[rank]\` citations + \`## Gaps\` + \`## Suggested follow-up searches\` tied to gap ids. Set \`raw=true\` to skip classification.`,
       schema: webSearchParamsSchema,
       outputSchema: webSearchOutputSchema,
       annotations: {

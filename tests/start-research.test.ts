@@ -33,6 +33,24 @@ test('static scaffolding teaches aggressive multi-call and parallel-callability'
   assert.match(markdown, /up to 50 queries/i);
 });
 
+test('static scaffolding teaches generic query rewrite discipline', () => {
+  const markdown = buildStaticScaffolding();
+
+  assert.match(markdown, /Query rewrite discipline/i);
+  assert.match(markdown, /retrieval probes, not topic labels/i);
+  assert.match(markdown, /Bad: `<feature> support`/);
+  assert.match(markdown, /site:<official-docs-domain> "<feature>" "<platform-or-version>"/);
+});
+
+test('static scaffolding does not bake in rejected topic-specific examples', () => {
+  const markdown = buildStaticScaffolding();
+  const rejectedExactQuery = new RegExp(`"${['query', 'fan-out'].join(' ')}" "${['AI', 'Mode'].join(' ')}"`);
+  const rejectedDomain = new RegExp(['developers', 'googleblog'].join('\\.'));
+
+  assert.doesNotMatch(markdown, rejectedExactQuery);
+  assert.doesNotMatch(markdown, rejectedDomain);
+});
+
 test('static scaffolding explains scope values for web-search', () => {
   const markdown = buildStaticScaffolding();
 

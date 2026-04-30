@@ -9,6 +9,14 @@ This server has a hosted deployment at `https://research.yigitkonur.com/mcp`.
 You can also install from npm or clone the repo and deploy it to your own
 infrastructure.
 
+## [Unreleased]
+
+### Changed
+
+- Strengthened `web-search` and `start-research` guidance with generic
+  bad-to-better query rewrite pairs so agents produce source-aware retrieval
+  probes instead of broad topic-label searches.
+
 ## [6.0.14] - 2026-04-30
 
 ### Removed

@@ -11,7 +11,7 @@ Built on [mcp-use](https://github.com/nicepkg/mcp-use). No stdio, HTTP only.
 | tool | what it does | needs |
 |------|-------------|-------|
 | `start-research` | returns a goal-tailored brief: `primary_branch` (reddit / web / both), exact `first_call_sequence`, 25–50 keyword seeds, iteration hints, gaps to watch, stop criteria. Call FIRST every session. | `LLM_API_KEY` + `LLM_BASE_URL` + `LLM_MODEL` for non-degraded brief generation (optional) |
-| `web-search` | parallel Google search, up to 50 queries per call, parallel-callable across turns. `scope: "web" \| "reddit" \| "both"` — reddit mode filters to post permalinks. Returns tiered markdown (HIGHLY_RELEVANT / MAYBE_RELEVANT / OTHER) + grounded synthesis + gaps + refine suggestions. | `SERPER_API_KEY` |
+| `web-search` | parallel Google search, up to 50 queries per call, parallel-callable across turns. `scope: "web" \| "reddit" \| "both"` — reddit mode filters to post permalinks. Queries should be retrieval probes, not topic labels: rewrite vague phrases into source-aware searches with anchors such as `site:`, exact quoted terms, versions, error text, package names, or community filters. Returns tiered markdown (HIGHLY_RELEVANT / MAYBE_RELEVANT / OTHER) + grounded synthesis + gaps + refine suggestions. | `SERPER_API_KEY` |
 | `scrape-links` | fetch URLs in parallel with per-URL LLM extraction. Auto-detects `reddit.com/r/.../comments/` permalinks and routes them through the Reddit API (threaded post + comments); PDF / DOCX / PPTX / XLSX URLs route through Jina Reader; non-reddit, non-document web URLs flow through Scrape.do. Parallel-callable. | `SCRAPEDO_API_KEY` for web URLs (+ `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` for reddit URLs; optional `JINA_API_KEY` for higher document limits) |
 
 Also exposes `/health` and `health://status`.
@@ -19,6 +19,8 @@ Also exposes `/health` and `health://status`.
 ## workflow
 
 Call `start-research` once at the beginning of each session with your goal. The server returns a brief that tells the agent exactly which tool to call first (reddit-first for sentiment/migration, web-first for spec/bug/pricing, both when opinion-heavy AND needs official sources), what keyword seeds to fire, and when to stop.
+
+For search fan-out, use bad → better rewrite thinking before calling `web-search`: turn broad phrases like `<feature> support`, `<product> pricing`, `<library> bug fix`, or `<tool> reviews` into source-aware probes such as `site:<official-docs-domain> "<feature>" "<platform-or-version>"`, `site:<vendor-domain> "<product>" pricing "enterprise" OR "free tier"`, `"<exact error text>" "<library-or-package>" "<version>" site:github.com`, or `site:reddit.com/r/<community>/comments "<tool>" "migration" OR "regression"`.
 
 Pair the server with the [`run-research`](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/run-research) skill for the full agentic playbook:
 
