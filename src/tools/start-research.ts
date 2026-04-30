@@ -1,7 +1,6 @@
 import type { MCPServer } from 'mcp-use/server';
 
 import {
-  startResearchOutputSchema,
   startResearchParamsSchema,
   type StartResearchOutput,
   type StartResearchParams,
@@ -257,7 +256,6 @@ export function registerStartResearchTool(server: MCPServer): void {
       description:
         'Call this FIRST every research session. Provide a `goal`; I return a goal-tailored brief naming (a) `primary_branch` (reddit for sentiment/migration, web for spec/bug/pricing, both when opinion-heavy AND needs official sources), (b) the exact `first_call_sequence` of web-search + scrape-links calls to fire, (c) 25–50 keyword seeds for your first `web-search` call, (d) iteration hints, (e) gaps to watch, (f) stop criteria. No goal? You still get the generic 3-tool playbook. Other tools work without calling this, but you will use them worse.',
       schema: startResearchParamsSchema,
-      outputSchema: startResearchOutputSchema,
       annotations: {
         readOnlyHint: true,
         idempotentHint: true,

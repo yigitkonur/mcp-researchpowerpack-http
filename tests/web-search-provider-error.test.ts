@@ -127,6 +127,7 @@ test('handleWebSearch preserves initial results when relaxed retry batch fails',
   assert.match(result.content, /https:\/\/example\.com\/result/);
 
   if (!result.isError) {
+    assert.equal(result.structuredContent?.content, result.content);
     assert.equal(result.structuredContent?.results?.length, 1);
     assert.equal(result.structuredContent?.metadata.successful, 1);
     assert.equal(result.structuredContent?.metadata.failed, 1);
@@ -174,6 +175,7 @@ test('handleWebSearch keeps legitimate zero-result searches as successful low-yi
   assert.match(result.content, /Low-yield queries/);
 
   if (!result.isError) {
+    assert.equal(result.structuredContent?.content, result.content);
     assert.equal(result.structuredContent?.metadata.successful, 0);
     assert.equal(result.structuredContent?.metadata.failed, 1);
   }

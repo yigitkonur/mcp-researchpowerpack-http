@@ -840,7 +840,7 @@ export async function handleWebSearch(
     const footer = `\n---\n*${formatDuration(executionTime)} | ${aggregation.totalUniqueUrls} unique URLs${llmClassified ? ' | LLM classified' : ''}*`;
     const fullMarkdown = markdown + footer;
 
-    return toolSuccess(fullMarkdown, { results, metadata });
+    return toolSuccess(fullMarkdown, { content: fullMarkdown, results, metadata });
   } catch (error) {
     return buildWebSearchError(error, params, startTime);
   }

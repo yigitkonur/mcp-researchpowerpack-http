@@ -16,10 +16,8 @@ export const startResearchParamsSchema = z.object({
     ),
 }).strict();
 
-// No output schema: `start-research` returns pure markdown via `content[0].text`.
-// There is nothing structured worth exposing (no per-row data, no metadata).
-// Clients read the primary text output; `structuredContent` is omitted entirely.
-export const startResearchOutputSchema = z.object({}).strict();
-
 export type StartResearchParams = z.infer<typeof startResearchParamsSchema>;
-export type StartResearchOutput = z.infer<typeof startResearchOutputSchema>;
+
+// `start-research` is text-only: the tool registration deliberately omits
+// `outputSchema`, and successful calls omit `structuredContent`.
+export type StartResearchOutput = Record<string, never>;

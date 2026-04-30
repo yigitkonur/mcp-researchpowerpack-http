@@ -82,6 +82,7 @@ test('handleWebSearch metadata counts successful query records, not unique URLs'
   assert.equal(response.isError, false);
   assert.equal(calls.length, 1);
   if (!response.isError) {
+    assert.equal(response.structuredContent?.content, response.content);
     assert.equal(response.structuredContent?.results?.length, 5);
     assert.equal(response.structuredContent?.metadata.total_items, 3);
     assert.equal(response.structuredContent?.metadata.successful, 2);
@@ -128,6 +129,7 @@ test('handleWebSearch metadata uses effective query records for scope both', asy
     'mcp prompts site:reddit.com',
   ]);
   if (!response.isError) {
+    assert.equal(response.structuredContent?.content, response.content);
     assert.equal(response.structuredContent?.metadata.total_items, 4);
     assert.equal(response.structuredContent?.metadata.successful, 2);
     assert.equal(response.structuredContent?.metadata.failed, 2);

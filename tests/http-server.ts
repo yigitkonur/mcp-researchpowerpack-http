@@ -412,6 +412,12 @@ async function main(): Promise<void> {
     );
     const scrapeLinksTool = tools.find((tool) => tool.name === 'scrape-links');
     assert.ok(scrapeLinksTool?.inputSchema, 'expected scrape-links inputSchema');
+    const startResearchTool = tools.find((tool) => tool.name === 'start-research');
+    assert.equal(
+      startResearchTool?.outputSchema,
+      undefined,
+      'start-research is text-only and should not declare outputSchema',
+    );
     const scrapeLinksRequired = scrapeLinksTool.inputSchema.required;
     assert.ok(Array.isArray(scrapeLinksRequired), 'expected scrape-links inputSchema.required array');
     assert.ok(scrapeLinksRequired.includes('urls'), 'expected scrape-links to require urls');
