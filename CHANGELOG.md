@@ -9,6 +9,15 @@ This server has a hosted deployment at `https://research.yigitkonur.com/mcp`.
 You can also install from npm or clone the repo and deploy it to your own
 infrastructure.
 
+## [6.0.12] - 2026-04-30
+
+### Fixed
+
+- `scrape-links` now mirrors the rendered scrape markdown into
+  `structuredContent.content` again. Some MCP bridge clients expose only
+  structured tool output to the model; with metadata-only structured output,
+  successful scrapes appeared empty except for counts.
+
 ## [6.0.10] - 2026-04-23
 
 **Current v6 contract.** The server is now a 3-tool, description-led research

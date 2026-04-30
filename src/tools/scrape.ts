@@ -656,7 +656,7 @@ function buildScrapeResponse(
     execution_time_ms: executionTime,
     total_credits: metrics.totalCredits,
   };
-  return { content: formattedContent, structuredContent: { metadata } };
+  return { content: formattedContent, structuredContent: { content: formattedContent, metadata } };
 }
 
 // --- Handler ---
