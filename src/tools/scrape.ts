@@ -293,11 +293,12 @@ async function fetchWebBranch(
 }
 
 function missingScraperWebPhase(inputs: BranchInput[]): WebPhaseResult {
+  const message = getMissingEnvMessage('scraping');
   return {
     successItems: [],
     failedContents: inputs.map((input) => ({
       index: input.origIndex,
-      content: `## ${input.url}\n\n❌ Web scraping unavailable. Set \`SCRAPEDO_API_KEY\` to enable non-reddit, non-document web URL scraping.`,
+      content: `## ${input.url}\n\n${message}`,
     })),
     metrics: { successful: 0, failed: inputs.length, totalCredits: 0 },
     jinaFallbacks: [],

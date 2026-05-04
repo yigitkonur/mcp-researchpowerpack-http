@@ -197,7 +197,7 @@ test('handleScrapeLinks: mixed web and document URLs do not fail the whole batch
   assert.equal(result.structuredContent?.metadata.total_credits, 0);
   assert.match(result.structuredContent?.content, /Converted PDF/);
   assertSubstringsInOrder(result.content, [
-    '## https://example.com/web-page\n\n❌ Web scraping unavailable. Set `SCRAPEDO_API_KEY`',
+    '## https://example.com/web-page\n\n❌ **Web scraping unavailable.** Set `SCRAPEDO_API_KEY`',
     '## https://example.com/report.pdf\n\n# Converted PDF',
   ]);
   assert.equal(calls.length, 1);
