@@ -650,6 +650,10 @@ ${truncatedContent}`;
       } catch (err: unknown) {
         lastError = classifyError(err);
         mcpLog('error', `Fallback error (attempt ${attempt + 1}): ${lastError.message}`, 'llm');
+        // Stop burning attempts on errors that won't change with another try
+        // (auth, invalid request, parse). Only keep retrying on transient
+        // (rate-limit / 5xx / stall) and context-window failures.
+        if (!isRetryableLLMError(err) && !isContextWindowError(err)) break;
       }
     }
   }
