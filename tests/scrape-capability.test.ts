@@ -7,6 +7,7 @@ import {
   handleScrapeLinks,
   registerScrapeLinksTool,
 } from '../src/tools/scrape.js';
+import { _resetLLMConfigStatusForTests } from '../src/config/index.js';
 import type { ScrapeLinksParams } from '../src/schemas/scrape-links.js';
 
 const SCRUBBED_ENV_KEYS = [
@@ -33,6 +34,7 @@ function scrubEnvForTest(t: object): void {
     delete process.env[key];
   }
   scrubbedEnvSnapshots.set(t, snapshot);
+  _resetLLMConfigStatusForTests();
 }
 
 function restoreEnvForTest(t: object): void {
@@ -49,6 +51,7 @@ function restoreEnvForTest(t: object): void {
   }
 
   scrubbedEnvSnapshots.delete(t);
+  _resetLLMConfigStatusForTests();
 }
 
 beforeEach((t) => {
