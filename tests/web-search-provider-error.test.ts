@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { _resetLLMConfigStatusForTests } from '../src/config/index.js';
 import { webSearchParamsSchema } from '../src/schemas/web-search.js';
 import { handleWebSearch, type SearchExecutor } from '../src/tools/search.js';
 import { NOOP_REPORTER } from '../src/tools/mcp-helpers.js';
@@ -49,6 +50,7 @@ async function withoutConfiguredLlm<T>(fn: () => Promise<T>): Promise<T> {
   delete process.env.LLM_BASE_URL;
   delete process.env.LLM_MODEL;
   delete process.env.LLM_FALLBACK_MODEL;
+  _resetLLMConfigStatusForTests();
 
   try {
     return await fn();
@@ -60,6 +62,7 @@ async function withoutConfiguredLlm<T>(fn: () => Promise<T>): Promise<T> {
         process.env[key] = value;
       }
     }
+    _resetLLMConfigStatusForTests();
   }
 }
 

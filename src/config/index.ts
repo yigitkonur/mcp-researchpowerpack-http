@@ -195,7 +195,11 @@ export interface LLMConfigStatus {
   readonly error: string | null;
 }
 
+let cachedLlmConfigStatus: LLMConfigStatus | null = null;
+
 export function getLLMConfigStatus(): LLMConfigStatus {
+  if (cachedLlmConfigStatus) return cachedLlmConfigStatus;
+
   const apiKeyPresent = !!process.env.LLM_API_KEY?.trim();
   const baseUrlPresent = !!process.env.LLM_BASE_URL?.trim();
   const modelPresent = !!process.env.LLM_MODEL?.trim();
@@ -206,7 +210,7 @@ export function getLLMConfigStatus(): LLMConfigStatus {
   if (!modelPresent) missingVars.push('LLM_MODEL');
 
   const configured = missingVars.length === 0;
-  return {
+  cachedLlmConfigStatus = {
     configured,
     apiKeyPresent,
     baseUrlPresent,
@@ -216,6 +220,13 @@ export function getLLMConfigStatus(): LLMConfigStatus {
       ? null
       : `LLM disabled: missing ${missingVars.join(', ')}`,
   };
+  return cachedLlmConfigStatus;
+}
+
+/** Test-only — clear the cached LLM config so a test can mutate env and re-read. */
+export function _resetLLMConfigStatusForTests(): void {
+  cachedLlmConfigStatus = null;
+  cachedLlmExtraction = null;
 }
 
 let cachedLlmExtraction: LlmExtractionConfig | null = null;

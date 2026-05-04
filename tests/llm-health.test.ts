@@ -9,6 +9,7 @@ import {
   markLLMSuccess,
 } from '../src/services/llm-processor.js';
 import {
+  _resetLLMConfigStatusForTests,
   getCapabilities,
   getLLMConfigStatus,
 } from '../src/config/index.js';
@@ -35,6 +36,9 @@ function withLlmEnv<T>(
       process.env[key] = value;
     }
   }
+  // Caches in src/config/index.ts memoize env at first read; reset before/after
+  // the override so the test sees the current env, not a prior test's snapshot.
+  _resetLLMConfigStatusForTests();
 
   try {
     return fn();
@@ -47,6 +51,7 @@ function withLlmEnv<T>(
         process.env[key] = value;
       }
     }
+    _resetLLMConfigStatusForTests();
   }
 }
 

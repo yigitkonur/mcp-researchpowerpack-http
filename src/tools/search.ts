@@ -620,18 +620,6 @@ function buildStructuredResults(
 
 // --- Error builder ---
 
-function isStructuredError(error: unknown): error is StructuredError {
-  if (typeof error !== 'object' || error === null) return false;
-  const record = error as Record<string, unknown>;
-  return typeof record.code === 'string'
-    && typeof record.message === 'string'
-    && typeof record.retryable === 'boolean';
-}
-
-function normalizeStructuredError(error: unknown): StructuredError {
-  return isStructuredError(error) ? error : classifyError(error);
-}
-
 function formatSearchFailureMessage(
   error: StructuredError,
   phase?: SearchFailurePhase,
@@ -648,21 +636,20 @@ function formatSearchFailureMessage(
 }
 
 function buildWebSearchError(
-  error: unknown,
+  error: StructuredError,
   params: WebSearchParams,
   startTime: number,
   phase?: SearchFailurePhase,
 ): ToolExecutionResult<WebSearchOutput> {
-  const structuredError = normalizeStructuredError(error);
-  const message = formatSearchFailureMessage(structuredError, phase);
+  const message = formatSearchFailureMessage(error, phase);
   const executionTime = Date.now() - startTime;
 
   mcpLog('error', `web-search: ${message}`, 'search');
 
   const errorContent = formatError({
-    code: structuredError.code,
+    code: error.code,
     message,
-    retryable: structuredError.retryable,
+    retryable: error.retryable,
     toolName: 'web-search',
     howToFix: ['Verify SERPER_API_KEY is set correctly'],
     alternatives: [
@@ -843,7 +830,7 @@ export async function handleWebSearch(
 
     return toolSuccess(fullMarkdown, { content: fullMarkdown, results, metadata });
   } catch (error) {
-    return buildWebSearchError(error, params, startTime);
+    return buildWebSearchError(classifyError(error), params, startTime);
   }
 }
 

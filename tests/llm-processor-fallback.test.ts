@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test, { after, before, beforeEach } from 'node:test';
 
 import type { OpenAITextGenerator } from '../src/services/llm-processor.js';
+import { _resetLLMConfigStatusForTests } from '../src/config/index.js';
 
 const PRIMARY_MODEL = 'test-primary-model';
 const FALLBACK_MODEL = 'test-fallback-model';
@@ -32,6 +33,7 @@ function restoreEnv(): void {
       process.env[key] = originalValue;
     }
   }
+  _resetLLMConfigStatusForTests();
 }
 
 before(async () => {
@@ -39,6 +41,7 @@ before(async () => {
   process.env.LLM_BASE_URL = 'https://llm.example.test/v1';
   process.env.LLM_MODEL = PRIMARY_MODEL;
   process.env.LLM_FALLBACK_MODEL = FALLBACK_MODEL;
+  _resetLLMConfigStatusForTests();
 
   ({
     _resetLLMHealthForTests,
